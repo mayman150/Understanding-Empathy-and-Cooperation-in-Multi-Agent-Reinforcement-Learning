@@ -31,7 +31,7 @@ def parse_args():
         help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=2.5e-4,
         help="the learning rate of the optimizer")
-    parser.add_argument("--num-envs", type=int, default=1, # must be multiples of the num_agents in the env.
+    parser.add_argument("--num-envs", type=int, default=8, # must be multiples of the num_agents in the env.
         help="the number of parallel game environments")
     parser.add_argument("--num-steps", type=int, default=128, # 512
         help="the number of steps to run in each environment per policy rollout")
@@ -63,7 +63,7 @@ def parse_args():
         help="the target KL divergence threshold")
 
     args = parser.parse_args()
-    args.batch_size = int(args.num_envs * args.num_steps) # 1 * 128
+    args.batch_size = int(args.num_steps) # 1 * 128
     args.minibatch_size = int(args.batch_size // args.num_minibatches) # 128 / 4 = 32
     # fmt: on
     return args
