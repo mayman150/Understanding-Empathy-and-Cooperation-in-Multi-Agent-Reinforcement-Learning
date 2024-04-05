@@ -24,10 +24,10 @@ def parse_args():
     parser.add_argument("--capture-video", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
         help="weather to capture videos of the agent performances (check out `videos` folder)")
 
-    # Algorithm specific arguments: commons_harvest__open
-    parser.add_argument("--env-id", type=str, default="clean_up",
+    # Algorithm specific arguments
+    parser.add_argument("--env-id", type=str, default="clean_up", #allelopathic_harvest__open
         help="the id of the environment")
-    parser.add_argument("--total-timesteps", type=int, default=500000, # probably 2MM at least
+    parser.add_argument("--total-timesteps", type=int, default=5000, # probably 2MM at least -> 500000
         help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=2.5e-4,
         help="the learning rate of the optimizer")
@@ -43,7 +43,7 @@ def parse_args():
         help="the discount factor gamma")
     parser.add_argument("--gae-lambda", type=float, default=0.95,
         help="the lambda for the general advantage estimation")
-    parser.add_argument("--num-minibatches", type=int, default=4,
+    parser.add_argument("--num-minibatches", type=int, default=64,
         help="the number of mini-batches")
     parser.add_argument("--update-epochs", type=int, default=2, # 4
         help="the K epochs to update the policy")
