@@ -376,7 +376,7 @@ if __name__ == "__main__":
         explained_var = (
             np.nan if (var_y == 0).all() else 1.0 - np.var(y_true - y_pred, axis=0) / var_y
         )
-
+         writer.add_scalar(f"charts/rewards/{agent}", rewards[:,i].sum(), global_step)
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         for i, agent in enumerate(possible_agents):
             writer.add_scalar(f"losses/value_loss/{agent}", v_loss[i], global_step)
