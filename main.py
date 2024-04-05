@@ -85,6 +85,7 @@ class MultiAgents(nn.Module):
                 if given_actions is None:
                     # x herer is obs: (1, 16, 88, 88, 3) -> (1)
                     action, log_prob, entropy, value = self.networks[a].get_action_and_value(x[:, a + env_idx*self.num_agents])
+                    
                 else:
                     # x herer is obs: (128, 16, 88, 88, 3), given_actions (128, 16) -> (128)
                     action, log_prob, entropy, value = self.networks[a].get_action_and_value(
@@ -147,9 +148,10 @@ if __name__ == "__main__":
     envs = ss.concat_vec_envs_v1(
         envs,
         num_vec_envs=args.num_envs,
-        num_cpus=0,
+        # num_cpus=3,
         base_class="gymnasium",
     )
+    import pdb; pdb.set_trace()
     # all agents have the same obs & action space in substrates we run on
     envs.single_observation_space = envs.observation_space["RGB"]  # if vec env
     envs.single_action_space = envs.action_space  # if vec env
