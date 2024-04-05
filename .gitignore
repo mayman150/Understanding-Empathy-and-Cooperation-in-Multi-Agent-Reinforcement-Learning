@@ -1,2 +1,4 @@
-#Ignoring result and videos folders
-#Ignoring .git folder
+result/
+videos/
+# Ignoring .git folder
+.git/
