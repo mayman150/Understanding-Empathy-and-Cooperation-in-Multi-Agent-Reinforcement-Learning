@@ -69,27 +69,31 @@ class MultiAgents(nn.Module):
             Agent(envs, agent_id).to(device) for agent_id in range(self.num_agents)
         )
 
-    def get_values(self, x):
+    def get_values(self, x, args):
         # x herer is obs: (16, 88, 88, 3)
-        values = [self.networks[a].get_value(x[a].unsqueeze(0)) for a in range(self.num_agents)]
+        values = []
+        for env_idx in range(args.num_envs):
+            for a in range(self.num_agents):
+                values.append(self.networks[a].get_value(x[a + env_idx].unsqueeze(0)))
         values = torch.cat(values, dim=0)
         return values
 
-    def get_actions_and_values(self,x , given_actions=None):
+    def get_actions_and_values(self, x , args, given_actions=None):
         actions, log_probs, entropies, values = [], [], [], []
-        for a in range(self.num_agents):
-            if given_actions is None:
-                # x herer is obs: (1, 16, 88, 88, 3) -> (1)
-                action, log_prob, entropy, value = self.networks[a].get_action_and_value(x[:, a])
-            else:
-                # x herer is obs: (128, 16, 88, 88, 3), given_actions (128, 16) -> (128)
-                action, log_prob, entropy, value = self.networks[a].get_action_and_value(
-                    x[:, a], action=given_actions[:, a]
-                )
-            actions.append(action)
-            log_probs.append(log_prob)
-            entropies.append(entropy)
-            values.append(value)
+        for env_idx in range(args.num_envs):
+            for a in range(self.num_agents):
+                if given_actions is None:
+                    # x herer is obs: (1, 16, 88, 88, 3) -> (1)
+                    action, log_prob, entropy, value = self.networks[a].get_action_and_value(x[:, a + env_idx*self.num_agents])
+                else:
+                    # x herer is obs: (128, 16, 88, 88, 3), given_actions (128, 16) -> (128)
+                    action, log_prob, entropy, value = self.networks[a].get_action_and_value(
+                        x[:, a+env_idx*self.num_agents], action=given_actions[:, a]
+                    )
+                actions.append(action)
+                log_probs.append(log_prob)
+                entropies.append(entropy)
+                values.append(value)
         actions = torch.cat(actions, dim=0)
         log_probs = torch.cat(log_probs, dim=0)
         entropies = torch.cat(entropies, dim=0)
@@ -142,7 +146,7 @@ if __name__ == "__main__":
     envs = ss.pettingzoo_env_to_vec_env_v1(envs)
     envs = ss.concat_vec_envs_v1(
         envs,
-        num_vec_envs=1,
+        num_vec_envs=args.num_envs,
         num_cpus=0,
         base_class="gymnasium",
     )
@@ -151,7 +155,7 @@ if __name__ == "__main__":
     envs.single_action_space = envs.action_space  # if vec env
     envs.is_vector_env = True
     envs.render_mode = "rgb_array"  # supersuit wrapper makes property gone
-    envs = RecordMultiagentEpisodeStatistics(envs, num_agents)
+    envs = RecordMultiagentEpisodeStatistics(envs, num_agents * args.num_envs)
     # if args.capture_video:
     #     envs = gym.wrappers.RecordVideo(envs, f"videos/{run_name}")
     envs = gym.wrappers.RecordVideo(envs, f"videos/{run_name}", episode_trigger=lambda x: True)
@@ -162,6 +166,7 @@ if __name__ == "__main__":
     # ALGO logic: Storage setup
     # remove all num_envs dimension as not considering vec_env for now
     # (512, 16, 88, 88, 3)
+    num_agents *= args.num_envs
     obs = torch.zeros((args.num_steps, num_agents) + envs.single_observation_space.shape).to(device)
     actions = torch.zeros((args.num_steps, num_agents) + envs.single_action_space.shape).to(device)
     logprobs = torch.zeros((args.num_steps, num_agents)).to(device)
@@ -198,7 +203,7 @@ if __name__ == "__main__":
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                action, logprob, _, value = agents.get_actions_and_values(next_obs.unsqueeze(0))
+                action, logprob, _, value = agents.get_actions_and_values(next_obs.unsqueeze(0),args)
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
@@ -212,19 +217,7 @@ if __name__ == "__main__":
             next_truncation = torch.tensor(truncation).to(device)
             next_obs = torch.Tensor(next_obs["RGB"]).to(device)
 
-            # for idx, item in enumerate(info):
-            #     player_idx = idx % num_agents
-            #     if "episode" in item.keys():
-            #         print(
-            #             f"global_step={global_step}, {player_idx}-episodic_return={item['episode']['r']}"
-            #         )
-            #         writer.add_scalar(
-            #             f"charts/episodic_return-player{player_idx}",
-            #             item["episode"]["r"],
-            #             global_step,
-            #         )
-
-            # 4 social outcome metrics from RecordMultiagentEpisodeStatistics
+    
             if "ma_episode" in info[0].keys():
                 #print the reward: 
                 print(
@@ -270,7 +263,7 @@ if __name__ == "__main__":
 
         # bootstrap value if not done
         with torch.no_grad():
-            next_value = agents.get_values(next_obs).reshape(1, -1)
+            next_value = agents.get_values(next_obs,args).reshape(1, -1)
             advantages = torch.zeros_like(rewards).to(device)
             lastgaelam = 0
             next_done = torch.maximum(next_termination, next_truncation)
@@ -316,7 +309,9 @@ if __name__ == "__main__":
                 _, newlogprob, entropy, newvalue = agents.get_actions_and_values(
                     # (B, 16, 88, 88, 3); (B, 16)
                     b_obs[mb_inds],
+                    args,
                     b_actions.long()[mb_inds],
+                    
                 )
                 # dealing with (B, 16) onwards here instead of the flattened batch dim like used to - a bit UGLY
                 newlogprob = newlogprob.reshape(-1, num_agents)
