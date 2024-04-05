@@ -137,6 +137,7 @@ if __name__ == "__main__":
     # ENV setup - skip helper wrappers like colour reduction, frame stack on atari envs for now
     envs = MeltingPotCompatibilityV0(substrate_name=args.env_id, render_mode="rgb_array")
     num_agents = envs._num_players
+    # num_agents = 4
     possible_agents = envs.possible_agents  # dict
     envs = ss.pettingzoo_env_to_vec_env_v1(envs)
     envs = ss.concat_vec_envs_v1(
@@ -151,9 +152,9 @@ if __name__ == "__main__":
     envs.is_vector_env = True
     envs.render_mode = "rgb_array"  # supersuit wrapper makes property gone
     envs = RecordMultiagentEpisodeStatistics(envs, num_agents)
-    if args.capture_video:
-        envs = gym.wrappers.RecordVideo(envs, f"videos/{run_name}")
-    import pdb; pdb.set_trace()
+    # if args.capture_video:
+    #     envs = gym.wrappers.RecordVideo(envs, f"videos/{run_name}")
+    envs = gym.wrappers.RecordVideo(envs, f"videos/{run_name}", episode_trigger=lambda x: True)
     agents = MultiAgents(envs, num_agents).to(device)
     optimizer = optim.Adam(agents.parameters(), lr=args.learning_rate, eps=1e-5)
     print(agents)
@@ -225,6 +226,10 @@ if __name__ == "__main__":
 
             # 4 social outcome metrics from RecordMultiagentEpisodeStatistics
             if "ma_episode" in info[0].keys():
+                #print the reward: 
+                print(
+                    f"global_step={global_step}, episodic_reward={rewards}"
+                )
                 print(
                     f"global_step={global_step}, episodic_max_length={info[0]['ma_episode']['l']}"
                 )
@@ -382,6 +387,9 @@ if __name__ == "__main__":
 
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         for i, agent in enumerate(possible_agents):
+            #adding rewards to tensorboard
+            # import pdb; pdb.set_trace()
+            writer.add_scalar(f"charts/rewards/{agent}", rewards[:,i].sum(), global_step)
             writer.add_scalar(f"losses/value_loss/{agent}", v_loss[i], global_step)
             writer.add_scalar(f"losses/policy_loss/{agent}", pg_loss[i], global_step)
             writer.add_scalar(f"losses/entropy/{agent}", entropy_loss[i], global_step)
