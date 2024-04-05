@@ -75,17 +75,31 @@ class MultiAgents(nn.Module):
         values = torch.cat(values, dim=0)
         return values
 
-    def get_actions_and_values(self, x, given_actions=None):
+    def get_actions_and_values(self, x, given_actions=None, aversion=0):
         actions, log_probs, entropies, values = [], [], [], []
+        n_values_dict = []
         for a in range(self.num_agents):
             if given_actions is None:
                 # x herer is obs: (1, 16, 88, 88, 3) -> (1)
                 action, log_prob, entropy, value = self.networks[a].get_action_and_value(x[:, a])
+                n_values_dict.append([])
+                if aversion == 1:
+                    for b in range(self.num_agents):
+                        if a != b:
+                            _,_,_,n_value=self.networks[a].get_action_and_value(x[:, b])
+                            n_values_dict[a].append(n_value)
             else:
                 # x herer is obs: (128, 16, 88, 88, 3), given_actions (128, 16) -> (128)
                 action, log_prob, entropy, value = self.networks[a].get_action_and_value(
                     x[:, a], action=given_actions[:, a]
                 )
+                n_values_dict.append([])
+                if aversion == 1:
+                    for b in range(self.num_agents):
+                        if a != b:
+                            _,_,_,n_value=self.networks[a].get_action_and_value(x[:, b], action=given_actions[:, a])
+                            n_values_dict[a].append(n_value)
+                        
             actions.append(action)
             log_probs.append(log_prob)
             entropies.append(entropy)
@@ -94,7 +108,15 @@ class MultiAgents(nn.Module):
         log_probs = torch.cat(log_probs, dim=0)
         entropies = torch.cat(entropies, dim=0)
         values = torch.cat(values, dim=0)
-        return actions, log_probs, entropies, values
+        #make n_values to numpy first 
+        # n_values_dict = [n_values_dict[i] for i in range(self.num_agents)]
+        aversion_values = [[]]
+        if aversion== 1: 
+            for i in range(self.num_agents):
+                n_values_dict[i] = torch.stack(n_values_dict[i], dim=0)
+            #convert the list to torch. 
+            aversion_values = torch.stack(n_values_dict, dim=0)
+        return actions, log_probs, entropies, values,aversion_values
 
 
 def unbatchify(x, possible_agents):
@@ -102,6 +124,10 @@ def unbatchify(x, possible_agents):
     x = {a: x[i] for i, a in enumerate(possible_agents)}
     return x
 
+def aversion_calc(phi, myAdv, otherAdv):
+    B = np.average(otherAdv, axis=1)
+    A = myAdv
+    return torch.cos(phi)*A + torch.sin(phi)*B
 
 if __name__ == "__main__":
     args = parse_args()
@@ -195,7 +221,7 @@ if __name__ == "__main__":
 
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                action, logprob, _, value = agents.get_actions_and_values(next_obs.unsqueeze(0))
+                action, logprob, _, value, _ = agents.get_actions_and_values(next_obs.unsqueeze(0))
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
@@ -265,6 +291,7 @@ if __name__ == "__main__":
         with torch.no_grad():
             next_value = agents.get_values(next_obs).reshape(1, -1)
             advantages = torch.zeros_like(rewards).to(device)
+            # adventages_aversion = torch.zeros(*rewards.shape, num_agents - 1).to(device)
             lastgaelam = 0
             next_done = torch.maximum(next_termination, next_truncation)
             dones = torch.maximum(terminations, truncations)
@@ -275,6 +302,7 @@ if __name__ == "__main__":
                 else:
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
+                    
                 delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
                 advantages[t] = lastgaelam = (
                     delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
@@ -307,16 +335,34 @@ if __name__ == "__main__":
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
-
-                _, newlogprob, entropy, newvalue = agents.get_actions_and_values(
+                _, newlogprob, entropy, newvalue, _ = agents.get_actions_and_values(
                     # (B, 16, 88, 88, 3); (B, 16)
                     b_obs[mb_inds],
-                    b_actions.long()[mb_inds],
+                    b_actions.long()[mb_inds]
                 )
+                
+                b_next_obs = torch.zeros(*b_obs.shape).to(device)
+                
+                for i in range(1, args.num_steps -1):
+                    b_next_obs[i] = b_obs[i+1]
+                b_next_obs[args.num_steps - 1] = next_obs
+                
+                #For aversion
+                _, _, _, _, aversion_values = agents.get_actions_and_values(
+                    # (B, 16, 88, 88, 3); (B, 16)
+                    b_next_obs[mb_inds],
+                    b_actions.long()[mb_inds],
+                    aversion=1
+                )
+                
                 # dealing with (B, 16) onwards here instead of the flattened batch dim like used to - a bit UGLY
                 newlogprob = newlogprob.reshape(-1, num_agents)
                 newvalue = newvalue.reshape(-1, num_agents)
                 entropy = entropy.reshape(-1, num_agents)
+                aversion_values = aversion_values.reshape(*aversion_values.shape[:-2],-1) #7x6x2
+                aversion_values = aversion_values.permute(0, 2, 1)  # 7x2x6
+                #Sum the last dim to make it 2x7 eventually
+                aversion_values = torch.sum(aversion_values, dim=2).reshape(-1, num_agents) #2x7
 
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
@@ -325,12 +371,11 @@ if __name__ == "__main__":
                     old_approx_kl = (-logratio).mean(axis=0)
                     approx_kl = ((ratio - 1) - logratio).mean(axis=0)
                     clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean(axis=0)]
-                mb_advantages = b_advantages[mb_inds]
+                mb_advantages = b_advantages[mb_inds] + aversion_values
                 if args.norm_adv:
                     mb_advantages = (mb_advantages - mb_advantages.mean(axis=0)) / (
                         mb_advantages.std(axis=0) + 1e-8
                     )
-
                 # Policy loss
                 pg_loss1 = -mb_advantages * ratio
                 pg_loss2 = -mb_advantages * torch.clamp(
