@@ -374,7 +374,7 @@ if __name__ == "__main__":
                     clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean(axis=0)]
                 
                 # import pdb; pdb.set_trace()
-                mb_advantages = b_advantages[mb_inds] + args.alpha * torch.abs(aversion_values - next_values.reshape(-1, num_agents))
+                mb_advantages = b_advantages[mb_inds] - args.alpha * torch.abs(aversion_values - next_values.reshape(-1, num_agents))
                 if args.norm_adv:
                     mb_advantages = (mb_advantages - mb_advantages.mean(axis=0)) / (
                         mb_advantages.std(axis=0) + 1e-8
