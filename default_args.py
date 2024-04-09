@@ -27,9 +27,11 @@ def parse_args():
     # Algorithm specific arguments
     parser.add_argument("--alpha", type=float, default=0.01,
         help="the hyperparameter that controls the amount of influence other agents have on the policy update")
+    parser.add_argument("--beta", type=float, default=0.001,
+        help="the hyperparameter that controls the amount of influence other agents have on the policy update")
     parser.add_argument("--phi", type=float, default=0,
         help="social value orientation hyperparameter")
-    parser.add_argument("--env-id", type=str, default="clean_up", #allelopathic_harvest__open , clean_up allelopathic_harvest__open
+    parser.add_argument("--env-id", type=str, default="commons_harvest__open", #allelopathic_harvest__open , clean_up allelopathic_harvest__open
         help="the id of the environment")
     parser.add_argument("--total-timesteps", type=int, default=2000000, # probably 2MM at least -> 500000
         help="total timesteps of the experiments")
