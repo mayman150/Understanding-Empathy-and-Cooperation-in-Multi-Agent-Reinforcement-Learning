@@ -3,5 +3,6 @@ videos/
 # Ignoring .git folder
 .git/
 __pycache__/
+*.txt
 models/
 *.txt
