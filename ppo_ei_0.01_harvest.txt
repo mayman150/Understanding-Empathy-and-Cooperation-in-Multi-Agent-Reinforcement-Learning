@@ -1,0 +1,101 @@
+MultiAgents(
+  (networks): ModuleList(
+    (0-6): 7 x Agent(
+      (network): Sequential(
+        (0): Conv2d(3, 32, kernel_size=(8, 8), stride=(4, 4))
+        (1): ReLU()
+        (2): Conv2d(32, 64, kernel_size=(4, 4), stride=(2, 2))
+        (3): ReLU()
+        (4): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1))
+        (5): ReLU()
+        (6): Flatten(start_dim=1, end_dim=-1)
+        (7): Linear(in_features=3136, out_features=512, bias=True)
+        (8): ReLU()
+      )
+      (actor): Linear(in_features=512, out_features=8, bias=True)
+      (critic): Linear(in_features=512, out_features=1, bias=True)
+    )
+  )
+)
+num_updates = total_timesteps / batch_size: 2000000 / 512 = 3906
+SPS: 33.36680212992291
+Episode lengths:  [999 999 999 999 999 999 999]
+global_step=1000, episodic_max_length=999
+global_step=1000, episodic_efficiency=0.13413413413413414
+global_step=1000, episodic_equality=0.5884861290100151
+global_step=1000, episodic_sustainability=19.142857142857142
+global_step=1000, episodic_peace=7.0
+SPS: 34.02209223756489
+SPS: 34.22882943397629
+Episode lengths:  [999 999 999 999 999 999 999]
+global_step=2000, episodic_max_length=999
+global_step=2000, episodic_efficiency=0.16116116116116116
+global_step=2000, episodic_equality=0.6344276841171251
+global_step=2000, episodic_sustainability=42.142857142857146
+global_step=2000, episodic_peace=7.0
+SPS: 33.86787094320436
+SPS: 34.1419072095357
+Episode lengths:  [999 999 999 999 999 999 999]
+global_step=3000, episodic_max_length=999
+global_step=3000, episodic_efficiency=0.0980980980980981
+global_step=3000, episodic_equality=0.5335276967930029
+global_step=3000, episodic_sustainability=56.142857142857146
+global_step=3000, episodic_peace=7.0
+SPS: 33.94340539337395
+SPS: 34.183974295293
+Episode lengths:  [999 999 999 999 999 999 999]
+global_step=4000, episodic_max_length=999
+global_step=4000, episodic_efficiency=0.15715715715715717
+global_step=4000, episodic_equality=0.5850773480799045
+global_step=4000, episodic_sustainability=78.57142857142857
+global_step=4000, episodic_peace=7.0
+SPS: 34.257930308130994
+SPS: 34.46151544546126
+Episode lengths:  [999 999 999 999 999 999 999]
+global_step=5000, episodic_max_length=999
+global_step=5000, episodic_efficiency=0.14114114114114115
+global_step=5000, episodic_equality=0.5562309910335248
+global_step=5000, episodic_sustainability=98.71428571428571
+global_step=5000, episodic_peace=7.0
+SPS: 34.44471408387188
+SPS: 34.48005827415789
+Episode lengths:  [999 999 999 999 999 999 999]
+global_step=6000, episodic_max_length=999
+global_step=6000, episodic_efficiency=0.2032032032032032
+global_step=6000, episodic_equality=0.6368754398311048
+global_step=6000, episodic_sustainability=127.71428571428571
+global_step=6000, episodic_peace=7.0
+SPS: 34.47394835255933
+SPS: 34.56056489770333
+Episode lengths:  [999 999 999 999 999 999 999]
+global_step=7000, episodic_max_length=999
+global_step=7000, episodic_efficiency=0.1041041041041041
+global_step=7000, episodic_equality=0.5934065822212751
+global_step=7000, episodic_sustainability=142.57142857142858
+global_step=7000, episodic_peace=7.0
+SPS: 34.55924303257797
+SPS: 34.59538727471153
+Episode lengths:  [999 999 999 999 999 999 999]
+global_step=8000, episodic_max_length=999
+global_step=8000, episodic_efficiency=0.15615615615615616
+global_step=8000, episodic_equality=0.5018315201042127
+global_step=8000, episodic_sustainability=164.85714285714286
+global_step=8000, episodic_peace=7.0
+SPS: 34.54262217400029
+SPS: 34.535231103201674
+Episode lengths:  [999 999 999 999 999 999 999]
+global_step=9000, episodic_max_length=999
+global_step=9000, episodic_efficiency=0.16416416416416416
+global_step=9000, episodic_equality=0.5731707366714159
+global_step=9000, episodic_sustainability=188.28571428571428
+global_step=9000, episodic_peace=7.0
+SPS: 34.502530879656625
+SPS: 34.58292224906721
+Episode lengths:  [999 999 999 999 999 999 999]
+global_step=10000, episodic_max_length=999
+global_step=10000, episodic_efficiency=0.14914914914914915
+global_step=10000, episodic_equality=0.54554172406809
+global_step=10000, episodic_sustainability=209.57142857142858
+global_step=10000, episodic_peace=7.0
+SPS: 34.50892966411684
+SPS: 34.53082945921302

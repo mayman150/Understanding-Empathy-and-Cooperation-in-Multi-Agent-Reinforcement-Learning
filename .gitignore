@@ -2,3 +2,4 @@ results/
 videos/
 # Ignoring .git folder
 .git/
+__pycache__/
