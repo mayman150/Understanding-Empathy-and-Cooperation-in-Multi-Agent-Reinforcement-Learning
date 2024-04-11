@@ -99,3 +99,26 @@ global_step=10000, episodic_sustainability=209.57142857142858
 global_step=10000, episodic_peace=7.0
 SPS: 34.50892966411684
 SPS: 34.53082945921302
+Episode lengths:  [999 999 999 999 999 999 999]
+global_step=11000, episodic_max_length=999
+global_step=11000, episodic_efficiency=0.15615615615615616
+global_step=11000, episodic_equality=0.659340671835969
+global_step=11000, episodic_sustainability=231.85714285714286
+global_step=11000, episodic_peace=7.0
+SPS: 34.44295686027521
+SPS: 34.428924627282036
+Episode lengths:  [999 999 999 999 999 999 999]
+global_step=12000, episodic_max_length=999
+global_step=12000, episodic_efficiency=0.15215215215215216
+global_step=12000, episodic_equality=0.5601503593816928
+global_step=12000, episodic_sustainability=253.57142857142858
+global_step=12000, episodic_peace=7.0
+SPS: 34.42027408422481
+SPS: 34.42471579568595
+Episode lengths:  [999 999 999 999 999 999 999]
+global_step=13000, episodic_max_length=999
+global_step=13000, episodic_efficiency=0.11811811811811812
+global_step=13000, episodic_equality=0.414043602477874
+global_step=13000, episodic_sustainability=270.42857142857144
+global_step=13000, episodic_peace=7.0
+SPS: 34.38354727117726
