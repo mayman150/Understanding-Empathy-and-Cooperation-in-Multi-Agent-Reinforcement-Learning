@@ -41,6 +41,3 @@ Agapiou, J., et al. (2022). *Melting Pot 2.0: Measuring and Understanding Multi-
 
 ## License
 This project is licensed under the MIT License - see the LICENSE.md file for details.
-
-## Acknowledgments
-We would like to thank our collaborators and the research community for their invaluable insights and contributions.
