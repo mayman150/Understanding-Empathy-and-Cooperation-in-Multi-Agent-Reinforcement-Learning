@@ -224,8 +224,6 @@ def main():
     model = stable_baselines3.PPO.load(model_path, env=env)
   eval_callback = callbacks.EvalCallback(
       eval_env, eval_freq=eval_freq, best_model_save_path=tensorboard_log)
-  print("LEEEEEEEEEEEEARN")
-#   import pdb ;pdb.set_trace()
 
   model.learn(total_timesteps=total_timesteps)#, callback=eval_callback)
 
