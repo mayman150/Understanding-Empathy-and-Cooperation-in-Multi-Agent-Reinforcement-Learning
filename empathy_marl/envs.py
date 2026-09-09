@@ -95,14 +95,18 @@ def make_envs(
     num_envs: int = 1,
     num_cpus: int = 0,
     max_cycles: int = 1000,
+    num_agents: int = 2,
     pd_payoffs: tuple[float, float, float, float] = (3.0, 0.0, 4.0, 1.0),
     render_mode: Optional[str] = None,
 ) -> EnvBundle:
+    """``num_agents`` applies to ``pd`` and ``debug:image``; Melting Pot substrates fix their own player count."""
     if num_envs < 1:
         raise ValueError("num_envs must be >= 1")
 
     if is_prisoners_dilemma(env_id):
-        par_env = RepeatedPrisonersDilemma(num_rounds=max_cycles, payoffs=pd_payoffs, render_mode=render_mode)
+        par_env = RepeatedPrisonersDilemma(
+            num_rounds=max_cycles, payoffs=pd_payoffs, num_players=num_agents, render_mode=render_mode
+        )
         agent_names = list(par_env.possible_agents)
         envs = _vectorize(par_env, num_envs, num_cpus)
         obs_space = envs.observation_space
@@ -122,7 +126,7 @@ def make_envs(
     if env_id == DEBUG_IMAGE_ID:
         from empathy_marl.debug_env import DebugImageEnv
 
-        par_env = DebugImageEnv(max_cycles=max_cycles, render_mode=render_mode)
+        par_env = DebugImageEnv(num_agents=num_agents, max_cycles=max_cycles, render_mode=render_mode)
     else:
         substrate = env_id[len(MELTINGPOT_PREFIX):] if env_id.startswith(MELTINGPOT_PREFIX) else env_id
         from shimmy import MeltingPotCompatibilityV0  # requires dm-meltingpot (Linux)

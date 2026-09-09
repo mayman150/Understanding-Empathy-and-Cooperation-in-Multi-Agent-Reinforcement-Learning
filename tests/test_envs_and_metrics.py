@@ -23,6 +23,26 @@ def test_pd_payoff_matrix():
         RepeatedPrisonersDilemma(payoffs=(1.0, 0.0, 4.0, 3.0))  # violates T > R > P > S
 
 
+def test_n_player_pd_averages_pairwise_payoffs_and_observes_fraction_of_others():
+    env = RepeatedPrisonersDilemma(num_rounds=5, payoffs=(3.0, 0.0, 4.0, 1.0), num_players=4)
+    env.reset(seed=0)
+    # players 0,1 cooperate; players 2,3 defect
+    obs, rew, _, _, _ = env.step({"player_0": COOPERATE, "player_1": COOPERATE, "player_2": DEFECT, "player_3": DEFECT})
+    # cooperator: others = (C, D, D) -> (3 + 0 + 0) / 3 = 1 ; defector: others = (C, C, D) -> (4 + 4 + 1) / 3 = 3
+    assert rew["player_0"] == pytest.approx(1.0) and rew["player_1"] == pytest.approx(1.0)
+    assert rew["player_2"] == pytest.approx(3.0) and rew["player_3"] == pytest.approx(3.0)
+    # obs: own one-hot, fraction of the *others* that cooperated / defected, first-round flag
+    assert obs["player_0"].tolist() == pytest.approx([1, 0, 1 / 3, 2 / 3, 0])
+    assert obs["player_2"].tolist() == pytest.approx([0, 1, 2 / 3, 1 / 3, 0])
+    # all cooperate beats all defect, defecting still dominates
+    _, rew_c, _, _, _ = env.step({a: COOPERATE for a in env.possible_agents})
+    _, rew_d, _, _, _ = env.step({a: DEFECT for a in env.possible_agents})
+    assert all(r == 3.0 for r in rew_c.values()) and all(r == 1.0 for r in rew_d.values())
+    with pytest.raises(ValueError):
+        RepeatedPrisonersDilemma(num_players=1)
+    assert make_envs("pd", num_envs=1, num_agents=3).num_agents == 3
+
+
 def test_vectorised_pd_layout_is_env_major_and_terminal_obs_is_extracted():
     b = make_envs("pd", num_envs=2, max_cycles=2)
     assert b.num_agents == 2 and b.envs.num_envs == 4

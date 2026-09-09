@@ -1,10 +1,20 @@
-"""Independent PPO learners with value-based social preferences (CleanRL style).
+"""Independent PPO learners with social preferences (CleanRL style).
 
-One script covers every experiment in the plan:
+``--formulation`` picks the functional form (none | ei | svo | sia | ia) and ``--signal`` picks
+what it is computed from: ``value`` (our proposal: the agent's own critic evaluated on the
+other agents' observations, added to the advantage) or ``reward`` (the literature baseline:
+an intrinsic reward built from the other agents' rewards).  One script covers every
+experiment in the plan:
 
-    # sanity check: repeated Prisoner's Dilemma, selfish vs. empathetic (per-agent alpha)
-    python train.py --env-id pd --max-cycles 100 --formulation sia --alpha 0,0.5 --seed 1 \
-        --num-envs 8 --num-steps 128 --total-timesteps 500000
+    # sanity check: repeated Prisoner's Dilemma, selfish vs. empathetic (per-agent alpha), value signal
+    python train.py --env-id pd --num-agents 2 --max-cycles 100 --formulation sia --signal value \
+        --alpha 0,20 --seed 1 --num-envs 8 --num-steps 128 --total-timesteps 500000
+
+    # the same functional form driven by the other agent's rewards (baseline with reward access)
+    python train.py --env-id pd --max-cycles 100 --formulation sia --signal reward --alpha 0,1 --seed 1
+
+    # 4-player Prisoner's Dilemma
+    python train.py --env-id pd --num-agents 4 --formulation ei --signal value --alpha 20
 
     # Commons Harvest, feed-forward CNN, SIA
     python train.py --env-id meltingpot:commons_harvest__open --formulation sia --alpha 0.1 --seed 1
@@ -13,13 +23,13 @@ One script covers every experiment in the plan:
     python train.py --env-id meltingpot:commons_harvest__open --formulation ei --alpha 0.01 \
         --recurrent --num-envs 4 --num-minibatches 4
 
-    # reward-based inequity aversion baseline (Hughes et al. 2018; needs others' rewards)
-    python train.py --env-id meltingpot:clean_up --formulation reward_ia --alpha 5 --beta 0.05
+    # Hughes et al. (2018) inequity-aversion reward baseline
+    python train.py --env-id meltingpot:clean_up --formulation ia --signal reward --alpha 5 --beta 0.05
 
 The rollout / GAE / clipped-surrogate code follows CleanRL's ``ppo_atari.py`` and
 ``ppo_atari_lstm.py``; the only additions are (i) a ``num_agents`` axis with one network
-per agent, (ii) the social term ``X_i`` added to the advantage, and (iii) optional reward
-shaping for the ``reward_ia`` baseline.
+per agent, (ii) the social term ``X_i`` added to the advantage (``--signal value``) and
+(iii) optional intrinsic reward (``--signal reward``).
 """
 from __future__ import annotations
 
@@ -38,16 +48,19 @@ from torch.utils.tensorboard import SummaryWriter
 
 from empathy_marl.agents import LSTMState, MultiAgents
 from empathy_marl.args import Args, resolve
-from empathy_marl.empathy import VALUE_BASED, InequityAversionRewardShaper, parse_per_agent, social_term
-from empathy_marl.envs import make_envs
+from empathy_marl.empathy import RewardSocialShaper, parse_per_agent, social_term
+from empathy_marl.envs import is_prisoners_dilemma, make_envs
 from empathy_marl.metrics import MultiAgentEpisodeStatistics
 
 
 def make_run_name(args: Args) -> str:
     env_tag = args.env_id.split(":")[-1]
+    if is_prisoners_dilemma(args.env_id) or args.env_id.startswith("debug"):
+        env_tag = f"{env_tag}_n{args.num_agents}"
+    method = args.formulation if args.formulation == "none" else f"{args.formulation}_{args.signal}"
     policy = "lstm" if args.recurrent else "ff"
     params = f"a{args.alpha}_b{args.beta}_p{args.phi}".replace(",", "-")
-    return f"{env_tag}__{args.formulation}__{policy}__{params}__s{args.seed}__{int(time.time())}"
+    return f"{env_tag}__{method}__{policy}__{params}__s{args.seed}__{int(time.time())}"
 
 
 @torch.no_grad()
@@ -133,6 +146,7 @@ if __name__ == "__main__":
         num_envs=args.num_envs,
         num_cpus=args.num_cpus,
         max_cycles=args.max_cycles,
+        num_agents=args.num_agents,
         pd_payoffs=args.pd_payoffs,
     )
     envs = MultiAgentEpisodeStatistics(bundle.envs, args.num_envs, bundle.num_agents)
@@ -142,8 +156,13 @@ if __name__ == "__main__":
     alpha = parse_per_agent(args.alpha, N, "alpha")
     beta = parse_per_agent(args.beta, N, "beta")
     phi = parse_per_agent(args.phi, N, "phi")
+    use_value_signal = args.formulation != "none" and args.signal == "value"
+    use_reward_signal = args.formulation != "none" and args.signal == "reward"
     print(f"env={args.env_id} agents={N} envs={E} obs={obs_shape} ({bundle.obs_type}) actions={bundle.single_action_space.n}")
-    print(f"formulation={args.formulation} alpha={alpha.tolist()} beta={beta.tolist()} phi={phi.tolist()} recurrent={args.recurrent}")
+    print(
+        f"formulation={args.formulation} signal={args.signal} alpha={alpha.tolist()} beta={beta.tolist()} "
+        f"phi={phi.tolist()} recurrent={args.recurrent}"
+    )
 
     agents = MultiAgents(
         N,
@@ -155,8 +174,8 @@ if __name__ == "__main__":
     ).to(device)
     optimizer = optim.Adam(agents.parameters(), lr=args.learning_rate, eps=1e-5)
     reward_shaper = (
-        InequityAversionRewardShaper(alpha, beta, args.gamma, args.ia_lambda, E, N, device)
-        if args.formulation == "reward_ia"
+        RewardSocialShaper(args.formulation, alpha, beta, phi, args.gamma, args.reward_lambda, E, N, device)
+        if use_reward_signal
         else None
     )
 
@@ -167,8 +186,9 @@ if __name__ == "__main__":
     obs = torch.zeros((T, E, N) + obs_shape, dtype=obs_dtype, device=device)
     actions = torch.zeros((T, E, N), dtype=torch.long, device=device)
     logprobs = torch.zeros((T, E, N), device=device)
-    rewards = torch.zeros((T, E, N), device=device)  # what PPO learns from (shaped for reward_ia)
+    rewards = torch.zeros((T, E, N), device=device)  # what PPO learns from (includes the intrinsic term for signal=reward)
     env_rewards = torch.zeros((T, E, N), device=device)  # raw environment rewards, for logging
+    social = torch.zeros((T, E, N), device=device)  # the social term: X_i (signal=value) or intrinsic reward (signal=reward)
     dones = torch.zeros((T, E, N), device=device)
     values = torch.zeros((T, E, N), device=device)
 
@@ -179,7 +199,7 @@ if __name__ == "__main__":
     next_obs = to_obs_tensor(bundle.extract_obs(raw_obs))
     next_done = torch.zeros((E, N), device=device)
     next_lstm_state = agents.initial_lstm_state(E, device)
-    cross_lstm_state = agents.initial_cross_lstm_state(E, device) if args.formulation in VALUE_BASED else None
+    cross_lstm_state = agents.initial_cross_lstm_state(E, device) if use_value_signal else None
     episodes_done = 0
 
     for iteration in range(1, args.num_iterations + 1):
@@ -225,8 +245,10 @@ if __name__ == "__main__":
                             )
                         reward_t = reward_t + args.gamma * terminal_value * trunc_only
 
-            if reward_shaper is not None:  # reward_ia baseline: intrinsic reward from others' rewards
-                reward_t = reward_shaper(reward_t, dones[step])
+            if reward_shaper is not None:  # signal=reward: intrinsic reward built from the others' (smoothed) rewards
+                intrinsic = reward_shaper(env_rewards[step], dones[step])
+                social[step] = intrinsic
+                reward_t = reward_t + intrinsic
             rewards[step] = reward_t
 
             next_done = torch.maximum(term_t, trunc_t)
@@ -267,23 +289,22 @@ if __name__ == "__main__":
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
             returns = advantages + values
 
-            # social term X_i(t): a constant coefficient, computed with the rollout-time critic ------
-            if args.formulation in VALUE_BASED:
+            # signal=value: X_i(t) = F_i(V_i(s_j^{t+1})), a constant coefficient computed with the rollout-time critic
+            if use_value_signal:
                 v_next, cross_lstm_state = compute_next_cross_values(
                     agents, obs, next_obs, dones, next_done, cross_lstm_state, args.cross_value_chunk
                 )
                 next_nonterminal_all = 1.0 - torch.cat([dones[1:], next_done.unsqueeze(0)], dim=0)  # (T, E, N)
-                social = social_term(args.formulation, v_next, alpha, beta, phi) * next_nonterminal_all
-            else:
-                social = torch.zeros_like(advantages)
+                social[:] = social_term(args.formulation, v_next, alpha, beta, phi) * next_nonterminal_all
+            # signal=reward: the intrinsic term already entered `rewards` (and GAE) during the rollout
+            advantage_coef = advantages + social if use_value_signal else advantages
 
         # flatten the batch: row = t * E + e (time-major, as required by the LSTM) ------------------
         b_obs = obs.reshape((T * E, N) + obs_shape)
         b_logprobs = logprobs.reshape(T * E, N)
         b_actions = actions.reshape(T * E, N)
         b_dones = dones.reshape(T * E, N)
-        b_advantages = advantages.reshape(T * E, N)
-        b_social = social.reshape(T * E, N)
+        b_advantages = advantage_coef.reshape(T * E, N)  # GAE advantage (+ X_i for signal=value)
         b_returns = returns.reshape(T * E, N)
         b_values = values.reshape(T * E, N)
 
@@ -325,7 +346,7 @@ if __name__ == "__main__":
                     approx_kl = ((ratio - 1) - logratio).mean(dim=0)
                     clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean(dim=0)]
 
-                mb_advantages = b_advantages[mb_inds] + b_social[mb_inds]
+                mb_advantages = b_advantages[mb_inds]
                 if args.norm_adv:
                     mb_advantages = (mb_advantages - mb_advantages.mean(dim=0)) / (mb_advantages.std(dim=0) + 1e-8)
 
@@ -379,9 +400,12 @@ if __name__ == "__main__":
             writer.add_scalar(f"losses/clipfrac/{name}", mean_clipfrac[i].item(), global_step)
             writer.add_scalar(f"losses/explained_variance/{name}", explained_var[i], global_step)
             writer.add_scalar(f"charts/rollout_env_reward/{name}", env_rewards[:, :, i].sum(dim=0).mean().item(), global_step)
-            writer.add_scalar(f"social/X_mean/{name}", social[:, :, i].mean().item(), global_step)
-            writer.add_scalar(f"social/X_abs_mean/{name}", social[:, :, i].abs().mean().item(), global_step)
+            # social term: X_i (signal=value, compare with the advantage scale) or intrinsic reward
+            # (signal=reward, compare with the environment reward scale)
+            writer.add_scalar(f"social/term_mean/{name}", social[:, :, i].mean().item(), global_step)
+            writer.add_scalar(f"social/term_abs_mean/{name}", social[:, :, i].abs().mean().item(), global_step)
             writer.add_scalar(f"social/advantage_abs_mean/{name}", advantages[:, :, i].abs().mean().item(), global_step)
+            writer.add_scalar(f"social/env_reward_abs_mean/{name}", env_rewards[:, :, i].abs().mean().item(), global_step)
             if bundle.cooperate_action is not None:
                 writer.add_scalar(f"charts/cooperation_rate/{name}", coop[i].item(), global_step)
         print(f"iteration={iteration}/{args.num_iterations} global_step={global_step} SPS={sps}")

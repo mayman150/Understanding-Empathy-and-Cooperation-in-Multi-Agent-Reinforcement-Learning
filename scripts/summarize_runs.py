@@ -3,7 +3,7 @@
     python scripts/summarize_runs.py runs/ --tags charts/collective_return charts/cooperation_rate/player_0 --last 20
     python scripts/summarize_runs.py runs/ --csv results.csv
 
-Groups runs by (env, formulation, policy, params) and reports mean +/- std across seeds,
+Groups runs by (env, method = formulation_signal, policy, params) and reports mean +/- std across seeds,
 which is what the report's plots and tables need.
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ DEFAULT_TAGS = [
     "charts/cooperation_rate/player_0",
     "charts/cooperation_rate/player_1",
 ]
-RUN_RE = re.compile(r"^(?P<env>.+?)__(?P<formulation>[a-z_]+)__(?P<policy>ff|lstm)__(?P<params>.+?)__s(?P<seed>\d+)__\d+$")
+RUN_RE = re.compile(r"^(?P<env>.+?)__(?P<method>[a-z]+(?:_[a-z]+)*)__(?P<policy>ff|lstm)__(?P<params>.+?)__s(?P<seed>\d+)__\d+$")
 
 
 def load_run(run_dir: str, tags: list[str], last: int) -> dict[str, float]:
@@ -56,13 +56,13 @@ def main() -> None:
             continue
         metrics = load_run(run_dir, a.tags, a.last)
         if metrics:
-            key = (m["env"], m["formulation"], m["policy"], m["params"])
+            key = (m["env"], m["method"], m["policy"], m["params"])
             metrics["seed"] = int(m["seed"])
             groups[key].append(metrics)
 
     rows = []
     for key, runs in sorted(groups.items()):
-        row = {"env": key[0], "formulation": key[1], "policy": key[2], "params": key[3], "seeds": len(runs)}
+        row = {"env": key[0], "method": key[1], "policy": key[2], "params": key[3], "seeds": len(runs)}
         for tag in a.tags:
             vals = [r[tag] for r in runs if tag in r]
             if vals:
@@ -72,7 +72,7 @@ def main() -> None:
     if not rows:
         print("no runs found")
         return
-    cols = ["env", "formulation", "policy", "params", "seeds"] + [t for t in a.tags if any(t in r for r in rows)]
+    cols = ["env", "method", "policy", "params", "seeds"] + [t for t in a.tags if any(t in r for r in rows)]
     widths = {c: max(len(c), *(len(str(r.get(c, ""))) for r in rows)) for c in cols}
     print(" | ".join(c.ljust(widths[c]) for c in cols))
     print("-+-".join("-" * widths[c] for c in cols))

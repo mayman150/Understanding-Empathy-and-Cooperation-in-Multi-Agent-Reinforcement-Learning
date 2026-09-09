@@ -44,9 +44,9 @@ train.py                 single entrypoint: independent PPO learners (CleanRL st
 evaluate.py              roll out a checkpoint, report metrics, optional video
 empathy_marl/
   envs.py                env factory: `pd`, `meltingpot:<substrate>`, `debug:image`
-  prisoners_dilemma.py   repeated Prisoner's Dilemma (PettingZoo ParallelEnv)
+  prisoners_dilemma.py   N-player repeated Prisoner's Dilemma (PettingZoo ParallelEnv)
   agents.py              CNN / MLP trunk, optional LSTM (ppo_atari_lstm.py), one network per agent
-  empathy.py             X_i formulations (ei, svo, sia, ia) + reward-based inequity aversion baseline
+  empathy.py             social term F_i (ei, svo, sia, ia) for the value signal (X_i) and the reward signal (intrinsic reward)
   metrics.py             efficiency / equality / sustainability per episode
 scripts/sweep_pd.sh, sweep_meltingpot.sh, summarize_runs.py
 tests/                   pytest suite (alignment, formulas, envs, end-to-end smoke tests)
@@ -58,14 +58,14 @@ legacy/                  original scripts, kept for reference only
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt          # Melting Pot (dm-meltingpot / dmlab2d) is Linux only
-python -m pytest tests -q                # 36 tests, ~20 s, no Melting Pot needed
+python -m pytest tests -q                # 44 tests, ~30 s, no Melting Pot needed
 ```
 
 ### Train
 
 ```bash
 # 1. sanity check: repeated Prisoner's Dilemma, per-agent social preference (selfish vs. empathetic)
-python train.py --env-id pd --max-cycles 100 --formulation sia --alpha 0,0.5 --seed 1 \
+python train.py --env-id pd --max-cycles 100 --formulation ei --signal value --alpha 0,20 --seed 1 \
     --num-envs 8 --num-steps 128 --total-timesteps 1000000
 
 # 2. Commons Harvest, feed-forward CNN, one formulation / seed
@@ -75,22 +75,47 @@ python train.py --env-id meltingpot:commons_harvest__open --formulation ei --alp
 python train.py --env-id meltingpot:commons_harvest__open --formulation sia --alpha 0.1 \
     --recurrent --num-envs 4 --num-minibatches 4
 
-# 4. reward-based baseline (Hughes et al. 2018 inequity aversion; uses other agents' rewards)
-python train.py --env-id meltingpot:clean_up --formulation reward_ia --alpha 5 --beta 0.05
+# 4. the same functional form driven by the other agents' REWARDS (baseline with reward access);
+#    ia + reward is the Hughes et al. (2018) inequity-aversion baseline
+python train.py --env-id meltingpot:clean_up --formulation ia --signal reward --alpha 5 --beta 0.05
 
-# sweeps over formulations x alpha x seeds
-SEEDS="1 2 3 4 5" scripts/sweep_pd.sh
+# 5. N-player Prisoner's Dilemma (payoffs averaged over all pairings)
+python train.py --env-id pd --num-agents 4 --formulation ei --signal value --alpha 20
+
+# sweeps over formulations x signal x alpha x seeds
+SEEDS="1 2 3 4 5" scripts/sweep_pd.sh                          # 2 players, value and reward signals
+NUM_AGENTS=4 MIXED="0,20,20,20" scripts/sweep_pd.sh            # 4 players, one selfish agent
 SUBSTRATE=clean_up EXTRA="--recurrent --num-envs 4" scripts/sweep_meltingpot.sh
-python scripts/summarize_runs.py runs/pd            # mean +/- std over seeds per configuration
+python scripts/summarize_runs.py runs/pd_n2                    # mean +/- std over seeds per configuration
 ```
 
-`--formulation` is one of `none` (plain PPO), `ei`, `svo`, `sia`, `ia` (value based, no access
-to others' rewards) or `reward_ia` (reward based).  `--alpha/--beta/--phi` accept one value or
-a comma-separated per-agent list.  Every run writes TensorBoard logs, `args.json` and
-`agents.pt` to `runs/<env>__<formulation>__<ff|lstm>__<params>__s<seed>__<time>/`.
+Two orthogonal switches define a method:
+
+* `--formulation`: the functional form `F_i` of the social term: `none` (plain PPO), `ei`,
+  `svo`, `sia`, `ia`.
+* `--signal`: what `F_i` is computed from.  `value` (our proposal) uses the agent's **own
+  critic** on the other agents' next observations, `z[i, j] = V_i(s_j')`, and adds
+  `X_i = F_i(z)` to the PPO advantage; no agent ever sees another agent's reward.  `reward`
+  (the literature's approach) uses the others' temporally smoothed rewards, `z[i, j] = e_j`,
+  and adds `F_i(z)` as an intrinsic reward (`--reward-lambda 0.975` as in Hughes et al.; `0`
+  for raw rewards as in Schwarting et al.).  Because both share the same `F_i`, a
+  value-vs-reward comparison isolates the signal.
+
+`--alpha/--beta/--phi` accept one value or a comma-separated per-agent list (`--alpha 0,20` =
+selfish vs. empathetic).  `--num-agents` sets the player count for `pd` / `debug:image`
+(Melting Pot substrates fix their own).  Every run writes TensorBoard logs, `args.json` and
+`agents.pt` to `runs/<env>__<formulation>_<signal>__<ff|lstm>__<params>__s<seed>__<time>/`.
 Useful TensorBoard tags: `charts/collective_return`, `charts/episodic_return/<agent>`,
 `charts/equality`, `charts/sustainability`, `charts/cooperation_rate/<agent>` (PD only),
-`social/X_abs_mean/<agent>` vs `social/advantage_abs_mean/<agent>` (scale of the social term).
+`social/term_abs_mean/<agent>` vs `social/advantage_abs_mean/<agent>` (value signal) or
+`social/env_reward_abs_mean/<agent>` (reward signal) to judge the scale of alpha.
+
+Scale of alpha: with `--signal value` the term competes with the advantage (magnitude ~10-25
+in PD after a few updates), so alphas of order 5-100 are needed; with `--signal reward` it
+competes with the reward (order 1).  Note also that `sia`/`ia` on the value signal are
+identically zero whenever two agents are in the *same* observed situation (e.g. both defect
+in a symmetric 2-player PD), so they cannot move a population away from an equitable
+all-defect equilibrium; `ei`/`svo` can.
 
 ### Evaluate
 

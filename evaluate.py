@@ -46,6 +46,7 @@ def main(args: EvalArgs) -> dict:
         targs["env_id"],
         num_envs=1,
         max_cycles=args.max_cycles or targs["max_cycles"],
+        num_agents=targs.get("num_agents", data["num_agents"]),
         pd_payoffs=tuple(targs["pd_payoffs"]),
         render_mode="rgb_array" if args.video else None,
     )
@@ -103,6 +104,8 @@ def main(args: EvalArgs) -> dict:
         "checkpoint": args.checkpoint,
         "env_id": targs["env_id"],
         "formulation": targs["formulation"],
+        "signal": targs.get("signal", "value"),
+        "num_agents": N,
         "alpha": targs["alpha"],
         "beta": targs["beta"],
         "phi": targs["phi"],

@@ -6,9 +6,10 @@ import sys
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-from empathy_marl.empathy import FORMULATIONS
+from empathy_marl.empathy import FORMULATIONS, SIGNALS
 
-Formulation = Literal["none", "ei", "svo", "sia", "ia", "reward_ia"]
+Formulation = Literal["none", "ei", "svo", "sia", "ia"]
+Signal = Literal["value", "reward"]
 
 
 @dataclass
@@ -41,8 +42,10 @@ class Args:
     """subprocesses used by supersuit to step the env copies (0 = in-process)"""
     max_cycles: int = 1000
     """episode length: Melting Pot cycles or Prisoner's Dilemma rounds"""
+    num_agents: int = 2
+    """number of players for `pd` / `debug:image` (Melting Pot substrates fix their own player count)"""
     pd_payoffs: tuple[float, float, float, float] = (3.0, 0.0, 4.0, 1.0)
-    """Prisoner's Dilemma payoffs (R, S, T, P)"""
+    """Prisoner's Dilemma payoffs (R, S, T, P); with N > 2 players payoffs are averaged over all pairings"""
 
     # --- policy --------------------------------------------------------------------------
     recurrent: bool = False
@@ -51,15 +54,18 @@ class Args:
 
     # --- social preference -----------------------------------------------------------------
     formulation: Formulation = "none"
-    """none | ei | svo | sia | ia (value based) | reward_ia (Hughes et al. 2018, uses others' rewards)"""
+    """functional form of the social term: none (plain PPO) | ei | svo | sia | ia"""
+    signal: Signal = "value"
+    """value: X_i from the agent's OWN critic on others' observations, added to the advantage (our proposal);
+    reward: intrinsic reward from the others' smoothed rewards (literature baseline, needs reward access)"""
     alpha: str = "0.0"
     """strength of the social term; one value for all agents or N comma-separated per-agent values"""
     beta: str = "0.0"
-    """advantageous-inequity coefficient for ia / reward_ia; scalar or per-agent list"""
+    """advantageous-inequity coefficient for ia; scalar or per-agent list"""
     phi: str = "0.0"
     """SVO angle in radians (0 = selfish, pi/2 = fully prosocial); scalar or per-agent list"""
-    ia_lambda: float = 0.975
-    """temporal smoothing of rewards in reward_ia (e_t = gamma * lambda * e_{t-1} + r_t)"""
+    reward_lambda: float = 0.975
+    """signal=reward: temporal smoothing e_t = gamma * lambda * e_{t-1} + r_t (0.975 as in Hughes et al.; 0 = raw rewards)"""
     cross_value_chunk: int = 64
     """time steps per chunk when evaluating V_i(s_j) for all pairs (memory / speed trade-off)"""
     bootstrap_truncation: bool = True
@@ -97,8 +103,12 @@ def resolve(args: Args) -> Args:
     """Derive batch sizes and validate the combination of options."""
     if args.formulation not in FORMULATIONS:
         raise ValueError(f"--formulation must be one of {FORMULATIONS}")
+    if args.signal not in SIGNALS:
+        raise ValueError(f"--signal must be one of {SIGNALS}")
     if args.num_envs < 1 or args.num_steps < 1 or args.num_minibatches < 1:
         raise ValueError("num_envs, num_steps and num_minibatches must be >= 1")
+    if args.num_agents < 2:
+        raise ValueError("num_agents must be >= 2")
     args.batch_size = int(args.num_envs * args.num_steps)
     if args.recurrent:
         if args.num_envs % args.num_minibatches != 0:

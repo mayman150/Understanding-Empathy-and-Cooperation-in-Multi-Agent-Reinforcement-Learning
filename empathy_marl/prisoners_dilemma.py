@@ -1,4 +1,4 @@
-"""Two-player repeated Prisoner's Dilemma as a PettingZoo ``ParallelEnv``.
+"""N-player repeated Prisoner's Dilemma as a PettingZoo ``ParallelEnv``.
 
 This is the "too easy" sanity-check environment: it lets us verify that the social
 terms change behaviour in the expected direction and lets agents with different
@@ -15,11 +15,20 @@ Payoffs are given as ``(R, S, T, P)`` (reward, sucker, temptation, punishment):
 The default ``(3, 0, 4, 1)`` is the matrix from the report and satisfies the usual
 PD conditions ``T > R > P > S`` and ``2R > T + S``.
 
+With ``num_players > 2`` every agent plays the stage game against each of the others
+with its single action and receives the **average** pairwise payoff.  With ``k`` of the
+``N - 1`` others cooperating, a cooperator earns ``(k R + (N-1-k) S) / (N-1)`` and a
+defector ``(k T + (N-1-k) P) / (N-1)``: defecting still dominates and all-cooperate
+still beats all-defect, and for ``N = 2`` this is exactly the matrix above.
+
 Observation (per agent, float32, shape ``(5,)``):
-    ``[own_last_C, own_last_D, other_last_C, other_last_D, first_round]``
-i.e. one-hot of both players' previous actions plus a flag for the first round.
-The round index is intentionally *not* observed so that policies cannot condition
-on the finite horizon (see the discussion of end-game defection in the report).
+    ``[own_last_C, own_last_D, frac_others_C, frac_others_D, first_round]``
+i.e. a one-hot of the agent's own previous action, the fraction of the *other* players
+that cooperated / defected in the previous round (a one-hot of the opponent's action when
+``N = 2``) and a flag for the first round.  The observation is agent specific, which is
+what the value-based social term needs (``V_i(s_j)`` must say something about *j*).
+The round index is intentionally *not* observed so that policies cannot condition on
+the finite horizon (see the discussion of end-game defection in the report).
 """
 from __future__ import annotations
 
@@ -44,22 +53,23 @@ class RepeatedPrisonersDilemma(ParallelEnv):
         self,
         num_rounds: int = 100,
         payoffs: tuple[float, float, float, float] = (3.0, 0.0, 4.0, 1.0),
+        num_players: int = 2,
         render_mode: str | None = None,
     ):
         super().__init__()
         if num_rounds < 1:
             raise ValueError("num_rounds must be >= 1")
+        if num_players < 2:
+            raise ValueError("num_players must be >= 2")
         reward, sucker, temptation, punishment = payoffs
         if not (temptation > reward > punishment > sucker):
             raise ValueError(f"payoffs {payoffs} do not satisfy T > R > P > S")
         self.num_rounds = int(num_rounds)
         self.payoffs = tuple(float(p) for p in payoffs)
-        # payoff_matrix[my_action, other_action] -> my reward
-        self.payoff_matrix = np.array(
-            [[reward, sucker], [temptation, punishment]], dtype=np.float32
-        )
+        # payoff_matrix[my_action, other_action] -> my reward from that pairing
+        self.payoff_matrix = np.array([[reward, sucker], [temptation, punishment]], dtype=np.float32)
         self.render_mode = render_mode
-        self.possible_agents = ["player_0", "player_1"]
+        self.possible_agents = [f"player_{i}" for i in range(num_players)]
         self.agents: list[str] = []
         self.round = 0
         self.last_actions: dict[str, int] | None = None
@@ -73,8 +83,8 @@ class RepeatedPrisonersDilemma(ParallelEnv):
     def action_space(self, agent: str) -> spaces.Space:
         return spaces.Discrete(2)
 
-    def _other(self, agent: str) -> str:
-        return self.possible_agents[1 - self.possible_agents.index(agent)]
+    def _others(self, agent: str) -> list[str]:
+        return [a for a in self.possible_agents if a != agent]
 
     def _observe(self, agent: str) -> np.ndarray:
         obs = np.zeros(OBS_DIM, dtype=np.float32)
@@ -82,7 +92,10 @@ class RepeatedPrisonersDilemma(ParallelEnv):
             obs[4] = 1.0
         else:
             obs[self.last_actions[agent]] = 1.0
-            obs[2 + self.last_actions[self._other(agent)]] = 1.0
+            others = np.array([self.last_actions[o] for o in self._others(agent)])
+            frac_cooperate = float((others == COOPERATE).mean())
+            obs[2] = frac_cooperate
+            obs[3] = 1.0 - frac_cooperate
         return obs
 
     def reset(self, seed: int | None = None, options: dict | None = None):
@@ -100,7 +113,7 @@ class RepeatedPrisonersDilemma(ParallelEnv):
             raise RuntimeError("step() called on a finished episode; call reset() first")
         acts = {agent: int(actions[agent]) for agent in self.agents}
         rewards = {
-            agent: float(self.payoff_matrix[acts[agent], acts[self._other(agent)]])
+            agent: float(np.mean([self.payoff_matrix[acts[agent], acts[o]] for o in self._others(agent)]))
             for agent in self.agents
         }
         self.last_actions = acts
@@ -118,9 +131,7 @@ class RepeatedPrisonersDilemma(ParallelEnv):
         if self.last_actions is None:
             return "round 0: no actions yet"
         names = {COOPERATE: "C", DEFECT: "D"}
-        return f"round {self.round}: " + " ".join(
-            f"{a}={names[self.last_actions[a]]}" for a in self.possible_agents
-        )
+        return f"round {self.round}: " + " ".join(f"{a}={names[self.last_actions[a]]}" for a in self.possible_agents)
 
     def close(self):
         pass

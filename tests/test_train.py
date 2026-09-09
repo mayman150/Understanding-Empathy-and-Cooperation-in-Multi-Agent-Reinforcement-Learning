@@ -58,22 +58,46 @@ PD_FAST = ["--env-id", "pd", "--max-cycles", "8", "--num-envs", "4", "--num-step
            "--total-timesteps", "128", "--no-cuda"]
 
 
-@pytest.mark.parametrize("formulation", ["none", "ei", "svo", "sia", "ia", "reward_ia"])
-def test_train_pd_feedforward_all_formulations(formulation, tmp_path):
-    out = _run(PD_FAST + ["--formulation", formulation, "--alpha", "0,0.3", "--beta", "0.1", "--phi", "0.5"], tmp_path)
+@pytest.mark.parametrize("signal", ["value", "reward"])
+@pytest.mark.parametrize("formulation", ["none", "ei", "svo", "sia", "ia"])
+def test_train_pd_feedforward_all_formulations_and_signals(formulation, signal, tmp_path):
+    out = _run(
+        PD_FAST + ["--formulation", formulation, "--signal", signal, "--alpha", "0,0.3", "--beta", "0.1", "--phi", "0.5"],
+        tmp_path,
+    )
     assert "iteration=2/2" in out
     ckpt = glob.glob(str(tmp_path / "*" / "agents.pt"))
     assert len(ckpt) == 1
+    method = "none" if formulation == "none" else f"{formulation}_{signal}"
+    assert os.path.basename(os.path.dirname(ckpt[0])).startswith(f"pd_n2__{method}__ff__")
     data = torch.load(ckpt[0], map_location="cpu", weights_only=False)
-    assert data["num_agents"] == 2 and data["args"]["formulation"] == formulation
+    assert data["num_agents"] == 2 and data["args"]["formulation"] == formulation and data["args"]["signal"] == signal
     agents = MultiAgents(2, OBS, spaces.Discrete(2), "vector")
     agents.load_state_dict(data["agents"])
 
 
-@pytest.mark.parametrize("formulation", ["sia", "reward_ia"])
-def test_train_pd_recurrent(formulation, tmp_path):
-    out = _run(PD_FAST + ["--recurrent", "--formulation", formulation, "--alpha", "0.2", "--beta", "0.1"], tmp_path)
+@pytest.mark.parametrize("signal", ["value", "reward"])
+def test_train_pd_recurrent(signal, tmp_path):
+    out = _run(PD_FAST + ["--recurrent", "--formulation", "sia", "--signal", signal, "--alpha", "0.2"], tmp_path)
     assert "iteration=2/2" in out
+
+
+def test_train_four_player_pd_with_per_agent_alphas(tmp_path):
+    out = _run(
+        PD_FAST + ["--num-agents", "4", "--formulation", "ia", "--signal", "value", "--alpha", "0,1,2,3", "--beta", "0.5"],
+        tmp_path,
+    )
+    assert "agents=4" in out and "iteration=2/2" in out
+    ckpt = glob.glob(str(tmp_path / "pd_n4__ia_value__ff__*" / "agents.pt"))
+    assert len(ckpt) == 1
+    assert torch.load(ckpt[0], map_location="cpu", weights_only=False)["num_agents"] == 4
+
+
+def test_alpha_list_of_wrong_length_is_rejected(tmp_path):
+    cmd = [sys.executable, os.path.join(ROOT, "train.py"), "--run-dir", str(tmp_path), *PD_FAST, "--num-agents", "3",
+           "--formulation", "ei", "--alpha", "0,1"]
+    res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=120)
+    assert res.returncode != 0 and "--alpha must be a single value or 3" in res.stderr
 
 
 def test_train_image_env_cnn(tmp_path):

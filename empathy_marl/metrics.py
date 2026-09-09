@@ -16,8 +16,8 @@ common-pool resource appropriation":
 observation that the shimmy wrapper strips.
 
 The wrapper sits on top of the auto-resetting supersuit ``ConcatVecEnv`` and only *reads*
-rewards, so reward shaping applied inside the training loop (``reward_ia``) does not
-affect the metrics.  When environment ``e`` finishes an episode, its statistics are placed
+rewards, so the intrinsic reward added inside the training loop (``--signal reward``) does
+not affect the metrics.  When environment ``e`` finishes an episode, its statistics are placed
 in ``infos[e * num_agents]["ma_episode"]``.
 """
 from __future__ import annotations
