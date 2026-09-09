@@ -32,8 +32,90 @@ Figure above shows the graphs for 3 of the 7 agents where each curve corresponds
 
 However, there is a single blue curve that seems to achieve a much higher reward per episode consistently for all agents. This corresponds to one of our SIA agents, which seemed to learn to cooperate to some degree. While this result is not conclusive, this indicates a good path of investigation moving forward. We hope to do a more thorough parameter sweep of the SIA variation using several seeds in the future.
 
-## Reproducing the Results
-You can easily install everything by executing `requirements.txt`. Then, you can try with different algorithms we are proposing (details of the algorithms are in our report) and you should have the same results. We left some model checkpoints in the `models` folder.
+> **Note on the preliminary results above.** They were produced with the scripts now in
+> `legacy/`, which contained a tensor-alignment bug that made PPO's ratio, value targets and
+> the social term compare unrelated (agent, timestep) pairs (see `legacy/README.md`).
+> They should be regenerated with `train.py` before being used in the paper.
+
+## Code
+
+```
+train.py                 single entrypoint: independent PPO learners (CleanRL style) + social term
+evaluate.py              roll out a checkpoint, report metrics, optional video
+empathy_marl/
+  envs.py                env factory: `pd`, `meltingpot:<substrate>`, `debug:image`
+  prisoners_dilemma.py   repeated Prisoner's Dilemma (PettingZoo ParallelEnv)
+  agents.py              CNN / MLP trunk, optional LSTM (ppo_atari_lstm.py), one network per agent
+  empathy.py             X_i formulations (ei, svo, sia, ia) + reward-based inequity aversion baseline
+  metrics.py             efficiency / equality / sustainability per episode
+scripts/sweep_pd.sh, sweep_meltingpot.sh, summarize_runs.py
+tests/                   pytest suite (alignment, formulas, envs, end-to-end smoke tests)
+legacy/                  original scripts, kept for reference only
+```
+
+### Install
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt          # Melting Pot (dm-meltingpot / dmlab2d) is Linux only
+python -m pytest tests -q                # 36 tests, ~20 s, no Melting Pot needed
+```
+
+### Train
+
+```bash
+# 1. sanity check: repeated Prisoner's Dilemma, per-agent social preference (selfish vs. empathetic)
+python train.py --env-id pd --max-cycles 100 --formulation sia --alpha 0,0.5 --seed 1 \
+    --num-envs 8 --num-steps 128 --total-timesteps 1000000
+
+# 2. Commons Harvest, feed-forward CNN, one formulation / seed
+python train.py --env-id meltingpot:commons_harvest__open --formulation ei --alpha 0.01 --seed 1
+
+# 3. partial observability: recurrent policy (needs num_envs % num_minibatches == 0)
+python train.py --env-id meltingpot:commons_harvest__open --formulation sia --alpha 0.1 \
+    --recurrent --num-envs 4 --num-minibatches 4
+
+# 4. reward-based baseline (Hughes et al. 2018 inequity aversion; uses other agents' rewards)
+python train.py --env-id meltingpot:clean_up --formulation reward_ia --alpha 5 --beta 0.05
+
+# sweeps over formulations x alpha x seeds
+SEEDS="1 2 3 4 5" scripts/sweep_pd.sh
+SUBSTRATE=clean_up EXTRA="--recurrent --num-envs 4" scripts/sweep_meltingpot.sh
+python scripts/summarize_runs.py runs/pd            # mean +/- std over seeds per configuration
+```
+
+`--formulation` is one of `none` (plain PPO), `ei`, `svo`, `sia`, `ia` (value based, no access
+to others' rewards) or `reward_ia` (reward based).  `--alpha/--beta/--phi` accept one value or
+a comma-separated per-agent list.  Every run writes TensorBoard logs, `args.json` and
+`agents.pt` to `runs/<env>__<formulation>__<ff|lstm>__<params>__s<seed>__<time>/`.
+Useful TensorBoard tags: `charts/collective_return`, `charts/episodic_return/<agent>`,
+`charts/equality`, `charts/sustainability`, `charts/cooperation_rate/<agent>` (PD only),
+`social/X_abs_mean/<agent>` vs `social/advantage_abs_mean/<agent>` (scale of the social term).
+
+### Evaluate
+
+```bash
+python evaluate.py --checkpoint runs/<run>/agents.pt --episodes 10 --out metrics.json
+python evaluate.py --checkpoint runs/<run>/agents.pt --episodes 1 --video harvest.mp4
+```
+
+### How the social term enters PPO
+
+With `v_next[t, i, j] = V_i(s_j^{t+1})` (agent *i*'s own critic on agent *j*'s next observation,
+computed once per rollout under `no_grad`), the minibatch coefficient is
+`A_GAE + X_i`, which is then normalised per agent and used in the clipped surrogate exactly as
+in CleanRL.  `X_i` is a constant with respect to the parameters (like the advantage); it is
+masked to zero at episode ends.  For recurrent critics agent *i* keeps a separate hidden state
+per observed agent *j* ("what if I had seen what *j* saw").
+
+### Observations and the value-based mechanism
+
+For `V_i(s_j)` to say anything about *j*'s situation, `s_j` has to be **agent specific**.  The
+Melting Pot egocentric `RGB` view is.  A "fully observable" variant that gives every agent the
+same global `WORLD.RGB` frame would make `V_i(s_j) = V_i(s_i)` and switch the social term off;
+a full-information setting therefore needs an agent-centred observation (e.g. global frame plus
+the agent's own egocentric view, or the agent's position marked in an extra channel).  See
+`empathy_marl/envs.py` (`MELTINGPOT_OBS_KEY`) for the extension point.
 
 
 ## Citation
