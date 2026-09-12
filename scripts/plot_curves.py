@@ -1,18 +1,22 @@
 """Learning curves from TensorBoard logs: mean +/- std over seeds, one line per configuration.
 
-    python scripts/plot_curves.py ~/scratch/MARL/empathy_runs/pd_n2_value ~/scratch/MARL/empathy_runs/pd_n2_reward -o curves_pd_n2
+    python scripts/plot_curves.py ~/scratch/MARL/empathy_runs/coin_value ~/scratch/MARL/empathy_runs/coin_reward -o curves_coin
     python scripts/plot_curves.py runs/pd_n2_value --tags charts/cooperation_rate/player_0 social/term_abs_mean/player_0 --bins 100
+    # PPO sensitivity of one configuration: lines = PPO settings (folder-name suffix lr.._ent..)
+    python scripts/plot_curves.py ~/scratch/MARL/empathy_runs/coin_ppo_formulation_svo_signal_value_alpha_30_phi_0.523599_lr*_ent* \
+        -o curves_ppo_svo30 --tags charts/collective_return charts/cooperation_rate/player_0
 
 Output directory:
-    curves.csv                    long format: env, method, params, seed, tag, step, value   (binned by step)
-    <tag>__<method>.png           one figure per (tag, method); lines = configurations (alpha, beta, phi),
-                                  shaded band = +/- 1 std over seeds
+    curves.csv                    long format: env, method, params, runs, seed, tag, step, value   (binned by step)
+    <tag>__<method>.png           one figure per (tag, method); lines = configurations (alpha, beta, phi) x result
+                                  folder, shaded band = +/- 1 std over seeds
     <tag>__all_methods.png        best configuration of every method on one figure (by final mean of the first tag)
 
-Runs are grouped exactly like scripts/summarize_runs.py (folder name
-<env>__<method>__<ff|lstm>__<params>__s<seed>__<time>).  Curves are averaged inside `--bins`
-equal-width step bins so that per-episode tags (tens of thousands of points) become smooth
-and the CSV stays small.
+Runs are grouped like scripts/summarize_runs.py (folder name <env>__<method>__<ff|lstm>__<params>__s<seed>__<time>).
+The PPO setting is not part of a run name, so when several result folders are given, runs are additionally
+keyed by the part of the folder name that differs between them (the `runs` column / the [label] in legends).
+Curves are averaged inside `--bins` equal-width step bins so that per-episode tags become smooth and the CSV
+stays small.
 """
 from __future__ import annotations
 
@@ -63,6 +67,14 @@ def bin_curve(steps: np.ndarray, values: np.ndarray, edges: np.ndarray) -> np.nd
         return np.where(counts > 0, sums / np.maximum(counts, 1), np.nan)
 
 
+def root_labels(roots: list[str]) -> dict[str, str]:
+    """Short label per result folder: the folder name minus the prefix shared by all of them (e.g. 'lr1e-3_ent0.05')."""
+    names = {r: os.path.basename(os.path.normpath(r)) for r in roots}
+    prefix = os.path.commonprefix(list(names.values()))
+    prefix = prefix[: prefix.rfind("_") + 1] if "_" in prefix else ""  # cut at a separator, not mid-token
+    return {r: (n[len(prefix):] or n) for r, n in names.items()}
+
+
 def pretty_params(params: str) -> str:
     # a20_b0.0_p0.0 -> alpha=20 ; a20_b10_p0.0 -> alpha=20, beta=10 ; a20_b0.0_p0.785 -> alpha=20, phi=0.785
     m = re.match(r"a(?P<a>[^_]+)_b(?P<b>[^_]+)_p(?P<p>.+)$", params)
@@ -97,24 +109,30 @@ def main() -> None:
     os.makedirs(a.out, exist_ok=True)
 
     # ---- load -------------------------------------------------------------------------------
-    run_dirs = []
-    for root in a.roots:
-        for run_dir in sorted(glob.glob(os.path.join(os.path.expanduser(root), "*"))):
+    # The PPO setting of a run is not in its name (only env/method/params/seed are), so runs of the same
+    # configuration from different result folders (e.g. coin_ppo_<conf>_lr1e-3_ent0.05) are told apart by a
+    # folder label: the part of the folder name that differs between the given roots.
+    roots = [os.path.expanduser(r) for r in a.roots]
+    labels = root_labels(roots) if len(roots) > 1 else {roots[0]: ""}
+    run_dirs, run_labels = [], []
+    for root in roots:
+        for run_dir in sorted(glob.glob(os.path.join(root, "*"))):
             m = RUN_RE.match(os.path.basename(run_dir))
             if not m or not glob.glob(os.path.join(run_dir, "events.out.tfevents.*")):
                 continue
             if a.methods and m["method"] not in a.methods:
                 continue
             run_dirs.append(run_dir)
+            run_labels.append(labels[root])
     with ProcessPoolExecutor(max_workers=max(1, a.jobs)) as pool:
         loaded = list(pool.map(load_scalars, run_dirs, [a.tags] * len(run_dirs)))
-    runs: dict[tuple, dict[int, dict]] = defaultdict(dict)  # (env, method, params) -> seed -> {tag: (steps, values)}
+    runs: dict[tuple, dict[int, dict]] = defaultdict(dict)  # (env, method, params, label) -> seed -> {tag: (steps, values)}
     max_step = 0.0
-    for run_dir, data in zip(run_dirs, loaded):
+    for run_dir, label, data in zip(run_dirs, run_labels, loaded):
         if not data:
             continue
         m = RUN_RE.match(os.path.basename(run_dir))
-        runs[(m["env"], m["method"], m["params"])][int(m["seed"])] = data
+        runs[(m["env"], m["method"], m["params"], label)][int(m["seed"])] = data
         max_step = max(max_step, max(s[-1] for s, _ in data.values()))
     if not runs:
         raise SystemExit("no runs found")
@@ -126,7 +144,7 @@ def main() -> None:
     agg: dict[tuple, dict[str, tuple[np.ndarray, np.ndarray, int]]] = {}  # config -> tag -> (mean, std, n)
     with open(os.path.join(a.out, "curves.csv"), "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["env", "method", "params", "seed", "tag", "step", "value"])
+        w.writerow(["env", "method", "params", "runs", "seed", "tag", "step", "value"])
         for key, seeds in sorted(runs.items()):
             agg[key] = {}
             for tag in a.tags:
@@ -138,7 +156,7 @@ def main() -> None:
                     per_seed.append(curve)
                     for step, val in zip(centers, curve):
                         if not np.isnan(val):
-                            w.writerow([key[0], key[1], key[2], seed, tag, int(step), f"{val:.6g}"])
+                            w.writerow([key[0], key[1], key[2], key[3], seed, tag, int(step), f"{val:.6g}"])
                 if per_seed:
                     stack = np.vstack(per_seed)
                     with np.errstate(invalid="ignore"):
@@ -158,12 +176,15 @@ def main() -> None:
         ax.plot(centers[ok], mean[ok], label=label, linewidth=1.4)
         ax.fill_between(centers[ok], (mean - std)[ok], (mean + std)[ok], alpha=0.2)
 
+    def legend_name(key: tuple) -> str:
+        return pretty_params(key[2]) + (f" [{key[3]}]" if key[3] else "")
+
     methods = sorted({k[1] for k in agg})
     for tag in a.tags:
         safe_tag = tag.replace("/", "_")
-        # one figure per method: lines = configurations
+        # one figure per method: lines = configurations (x folder label, e.g. PPO setting)
         for method in methods:
-            configs = sorted([k for k in agg if k[1] == method and tag in agg[k]], key=lambda k: sort_key(k[2]))
+            configs = sorted([k for k in agg if k[1] == method and tag in agg[k]], key=lambda k: (sort_key(k[2]), k[3]))
             if not configs:
                 continue
             fig, ax = plt.subplots(figsize=(8, 4.5))
@@ -172,7 +193,7 @@ def main() -> None:
                 mean, std, n = agg[key][tag]
                 ax.plot([], [])  # keep colour order stable
                 ok = ~np.isnan(mean)
-                ax.plot(centers[ok], mean[ok], color=cmap(i), linewidth=1.4, label=f"{pretty_params(key[2])} (n={n})")
+                ax.plot(centers[ok], mean[ok], color=cmap(i), linewidth=1.4, label=f"{legend_name(key)} (n={n})")
                 ax.fill_between(centers[ok], (mean - std)[ok], (mean + std)[ok], color=cmap(i), alpha=0.18)
             ax.set_title(f"{tag}   |   {method}", fontsize=10)
             ax.set_xlabel("environment steps")
@@ -192,7 +213,7 @@ def main() -> None:
                 continue
             best = max(configs, key=lambda k: np.nanmean(agg[k][ref_tag][0][-max(1, a.bins // 10):]))
             mean, std, n = agg[best][tag]
-            draw(ax, mean, std, f"{method}: {pretty_params(best[2])} (n={n})")
+            draw(ax, mean, std, f"{method}: {legend_name(best)} (n={n})")
         ax.set_title(f"{tag}   |   best configuration per method", fontsize=10)
         ax.text(0.01, 0.01, f"selection: final {ref_tag}", transform=ax.transAxes, fontsize=7, alpha=0.7)
         ax.set_xlabel("environment steps")
