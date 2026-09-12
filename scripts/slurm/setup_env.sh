@@ -14,8 +14,13 @@ source "$SCRIPT_DIR/cluster.env"
 WITH_MELTINGPOT=${WITH_MELTINGPOT:-0}
 
 if command -v module >/dev/null 2>&1; then module load "$STDENV" "$PY_MODULE"; fi
+
+# supersuit depends on `tinyscaler`, a C extension built from source. Use the StdEnv gcc for it,
+# regardless of CC/CXX exported in the shell (e.g. CC=clang from other projects' setups).
+export CC=gcc CXX=g++
+
 mkdir -p "$(dirname "$VENV")"
-python -m venv "$VENV"
+python -m venv "$VENV"   # idempotent: re-running the script resumes an interrupted install
 source "$VENV/bin/activate"
 pip install --no-index --upgrade pip
 
