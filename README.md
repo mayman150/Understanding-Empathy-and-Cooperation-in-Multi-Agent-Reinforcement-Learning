@@ -144,7 +144,7 @@ phi in {pi/2, pi/3, pi/4, pi/6}, beta in {alpha/2, alpha/3, alpha/10}; alpha = 0
 plain-PPO baseline per seed), crossed with `--signals` and `--seeds`.  `scripts/slurm/`
 runs a grid file as a job array (task N = line N):
 
-Account, e-mail, modules and paths (repository location auto-detected, venv under `~/projects/aip-machado/$USER/MARL/envs/`, run
+Account, e-mail, modules and paths (repository location auto-detected, venv under `~/projects/aip-machado/$USER/MARL/envs/`, results under `~/scratch/MARL/empathy_runs/`, run
 root under `$SCRATCH`) are defined once in `scripts/slurm/cluster.env`; every value can be
 overridden from the environment.
 
@@ -166,11 +166,11 @@ scripts/slurm/submit.sh grids/harvest.txt 8 --gres=gpu:1 --cpus-per-task=4 --mem
 mkdir -p slurm_logs
 sbatch --array=1-10 --job-name=pd_ei_best scripts/slurm/run_seeds.sh --env-id pd --formulation ei --signal value --alpha 20
 
-python scripts/summarize_runs.py $SCRATCH/empathy_runs/pd_report --csv pd_report.csv
+python scripts/summarize_runs.py ~/scratch/MARL/empathy_runs/pd_report --csv pd_report.csv
 python scripts/make_grid.py --seeds 1 2 3 4 5 --latex          # the table for the paper
 ```
 
-Runs land in `$SCRATCH/empathy_runs/<grid or job name>/` (override with `RUN_DIR`), SLURM
+Runs land in `~/scratch/MARL/empathy_runs/<grid or job name>/` (override with `RUN_ROOT` or `RUN_DIR`), SLURM
 logs in `slurm_logs/<name>_<array id>_<task>.out|err`.  Both workers can be dry-run without
 SLURM: `SLURM_ARRAY_TASK_ID=3 VENV=.venv PROJECT_DIR=$PWD RUN_ROOT=/tmp/runs scripts/slurm/run_grid.sh grids/pd_report.txt`.
 
