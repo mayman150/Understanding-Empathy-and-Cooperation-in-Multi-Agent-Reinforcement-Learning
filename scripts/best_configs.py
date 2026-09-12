@@ -53,7 +53,13 @@ def config_key(args: dict) -> tuple:
 
 
 def method_of(args: dict) -> str:
-    return "none" if args["formulation"] == "none" else f"{args['formulation']}_{args['signal']}"
+    if args["formulation"] == "none":
+        return "none"
+    method = f"{args['formulation']}_{args['signal']}"
+    # SVO with phi = 0 is alpha * V_i(o_i): an own-value bonus with no other-regarding part -> the control, ranked separately
+    if args["formulation"] == "svo" and all(float(v) == 0.0 for v in str(args["phi"]).split(",")):
+        method += "_phi0_control"
+    return method
 
 
 def cli_flag(key: str) -> str:
