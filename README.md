@@ -50,6 +50,7 @@ empathy_marl/
   metrics.py             efficiency / equality / sustainability per episode
 scripts/sweep_pd.sh, sweep_meltingpot.sh, summarize_runs.py   (local sweeps + results table)
 scripts/make_grid.py, scripts/slurm/                          (parameter grids + Compute Canada job arrays)
+scripts/experiments/pd.sh                                     (experiment 1 end to end: tune / final / summary)
 tests/                   pytest suite (alignment, formulas, envs, end-to-end smoke tests)
 legacy/                  original scripts, kept for reference only
 ```
@@ -117,6 +118,23 @@ competes with the reward (order 1).  Note also that `sia`/`ia` on the value sign
 identically zero whenever two agents are in the *same* observed situation (e.g. both defect
 in a symmetric 2-player PD), so they cannot move a population away from an equitable
 all-defect equilibrium; `ei`/`svo` can.
+
+### Experiment 1: Prisoner's Dilemma, value signal vs. reward signal
+
+`scripts/experiments/pd.sh` runs the whole two-stage protocol on the cluster with two grids that
+share the functional forms (EI, SIA, SVO, IA, plus the plain-PPO baseline) and differ only in
+the signal: `grids/pd_n2_value.txt` (our idea, alpha up to 100 because the term competes with
+the advantage) and `grids/pd_n2_reward.txt` (baseline, the report's alpha range plus 1 and 3).
+
+```bash
+scripts/experiments/pd.sh tune                                            # stage 1: 2 seeds x 5M steps, both grids (308 jobs)
+scripts/experiments/pd.sh summary                                         # tables + CSVs once the arrays finish
+scripts/experiments/pd.sh final --formulation ei --signal value  --alpha 20            # stage 2: best of each signal,
+scripts/experiments/pd.sh final --formulation ia --signal reward --alpha 0.1 --beta 0.05  #          8 fresh seeds (3..10)
+SEEDS="1 2 3" NUM_AGENTS=4 scripts/experiments/pd.sh tune                 # variants via environment variables
+```
+
+The LaTeX parameter tables for both grids are written next to the grid files.
 
 ### Hyper-parameter grids on Compute Canada (SLURM)
 
