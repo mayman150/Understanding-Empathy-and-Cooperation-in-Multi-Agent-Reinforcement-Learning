@@ -35,13 +35,13 @@ class Args:
 
     # --- environment ---------------------------------------------------------------------
     env_id: str = "meltingpot:commons_harvest__open"
-    """`pd` (repeated Prisoner's Dilemma) or `meltingpot:<substrate>` (e.g. clean_up)"""
+    """`pd` (repeated Prisoner's Dilemma), `coin` (Coin Game, 3x3 grid) or `meltingpot:<substrate>` (e.g. clean_up)"""
     num_envs: int = 1
     """number of parallel copies of the game (each copy contains all agents)"""
     num_cpus: int = 0
     """subprocesses used by supersuit to step the env copies (0 = in-process)"""
     max_cycles: int = 1000
-    """episode length: Melting Pot cycles or Prisoner's Dilemma rounds"""
+    """episode length: Melting Pot cycles, Prisoner's Dilemma rounds or Coin Game steps (50 in the literature)"""
     num_agents: int = 2
     """number of players for `pd` / `debug:image` (Melting Pot substrates fix their own player count)"""
     pd_payoffs: tuple[float, float, float, float] = (3.0, 0.0, 4.0, 1.0)

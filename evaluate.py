@@ -93,7 +93,10 @@ def main(args: EvalArgs) -> dict:
             next_done = torch.as_tensor(np.maximum(term, trunc), dtype=torch.float32, device=device).reshape(1, N)
             if "ma_episode" in infos[0]:
                 ep = infos[0]["ma_episode"]
-                episodes.append({k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in ep.items()})
+                record = {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in ep.items() if k != "stats"}
+                if "stats" in ep:
+                    record["stats"] = {k: np.asarray(v).tolist() for k, v in ep["stats"].items()}
+                episodes.append(record)
                 print(
                     f"episode {len(episodes)}: collective={ep['collective']:.2f} per_agent={np.round(ep['r'], 2).tolist()} "
                     f"equality={ep['equality']:.3f} sustainability={ep['sustainability']:.1f}"
@@ -118,6 +121,12 @@ def main(args: EvalArgs) -> dict:
     }
     if bundle.cooperate_action is not None:
         summary["cooperation_rate"] = (coop_counts / steps).tolist()
+    # environment-specific per-episode statistics (e.g. Coin Game: own_coins, other_coins, cooperation_rate)
+    stat_keys = {k for e in episodes for k in e.get("stats", {})}
+    with np.errstate(invalid="ignore"):
+        for key in sorted(stat_keys):
+            values = np.array([e["stats"][key] for e in episodes if key in e.get("stats", {})], dtype=np.float64)
+            summary[f"{key}_mean"] = np.nanmean(values, axis=0).tolist()
     print(json.dumps(summary, indent=2))
     if args.out:
         with open(args.out, "w") as f:

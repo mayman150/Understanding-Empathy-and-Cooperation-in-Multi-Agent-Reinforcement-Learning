@@ -13,6 +13,11 @@ experiment in the plan:
     # the same functional form driven by the other agent's rewards (baseline with reward access)
     python train.py --env-id pd --max-cycles 100 --formulation sia --signal reward --alpha 0,1 --seed 1
 
+    # Coin Game (Lerer & Peysakhovich 2017): the PD on a 3x3 grid, so the state carries information
+    # about how well off each agent is (the sanity check for the value signal); 50-step episodes
+    python train.py --env-id coin --max-cycles 50 --formulation ei --signal value --alpha 3 --seed 1 \
+        --num-envs 8 --num-steps 128 --total-timesteps 1000000
+
     # 4-player Prisoner's Dilemma
     python train.py --env-id pd --num-agents 4 --formulation ei --signal value --alpha 20
 
@@ -272,6 +277,11 @@ if __name__ == "__main__":
                 writer.add_scalar("charts/episode_length", ep["l"], global_step)
                 for i, name in enumerate(bundle.agent_names):
                     writer.add_scalar(f"charts/episodic_return/{name}", ep["r"][i], global_step)
+                # environment-specific per-episode statistics (e.g. Coin Game: charts/cooperation_rate/<agent>)
+                for key, per_agent in ep.get("stats", {}).items():
+                    for i, name in enumerate(bundle.agent_names):
+                        if not np.isnan(per_agent[i]):
+                            writer.add_scalar(f"charts/{key}/{name}", per_agent[i], global_step)
 
         # bootstrap value if not done ---------------------------------------------------------
         with torch.no_grad():

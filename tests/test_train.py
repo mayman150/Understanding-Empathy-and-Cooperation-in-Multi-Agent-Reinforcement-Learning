@@ -93,6 +93,30 @@ def test_train_four_player_pd_with_per_agent_alphas(tmp_path):
     assert torch.load(ckpt[0], map_location="cpu", weights_only=False)["num_agents"] == 4
 
 
+@pytest.mark.parametrize("signal", ["value", "reward"])
+def test_train_coin_game_logs_episode_cooperation_rate(signal, tmp_path):
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    out = _run(
+        ["--env-id", "coin", "--max-cycles", "8", "--num-envs", "4", "--num-steps", "16", "--num-minibatches", "2",
+         "--total-timesteps", "128", "--no-cuda", "--formulation", "sia", "--signal", signal, "--alpha", "1"],
+        tmp_path,
+    )
+    assert "actions=4" in out and "iteration=2/2" in out
+    run_dirs = glob.glob(str(tmp_path / f"coin__sia_{signal}__ff__a1_b0.0_p0.0__s1__*"))
+    assert len(run_dirs) == 1
+    acc = EventAccumulator(run_dirs[0], size_guidance={"scalars": 0})
+    acc.Reload()
+    tags = set(acc.Tags()["scalars"])
+    # per-episode statistics from the environment (8-step episodes -> 16 episodes in 128 steps)
+    assert {"charts/own_coins/player_0", "charts/other_coins/player_1", "charts/collective_return"} <= tags
+    coop = [t for t in tags if t.startswith("charts/cooperation_rate/")]
+    assert coop, "cooperation_rate is logged whenever an agent picked up at least one coin"
+    for tag in coop:
+        assert all(0.0 <= s.value <= 1.0 for s in acc.Scalars(tag))
+    assert "social/term_abs_mean/player_0" in tags
+
+
 def test_alpha_list_of_wrong_length_is_rejected(tmp_path):
     cmd = [sys.executable, os.path.join(ROOT, "train.py"), "--run-dir", str(tmp_path), *PD_FAST, "--num-agents", "3",
            "--formulation", "ei", "--alpha", "0,1"]

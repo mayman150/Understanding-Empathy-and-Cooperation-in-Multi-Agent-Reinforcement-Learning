@@ -4,40 +4,44 @@
 #   grids/pd_value.txt    our idea:  --signal value   (own critic on the others' observations; no reward access)
 #   grids/pd_reward.txt   baseline:  --signal reward  (intrinsic reward from the others' smoothed rewards)
 #
-# Stage 1 (tuning, 2 seeds, 5M steps each):
+# Stage 1 (tuning, 3 seeds, 300k steps each; in the 5M-step grid every PD run had converged to a deterministic
+# policy by ~300k steps, so jobs are capped at 30 min and the budget goes into seeds instead):
 #   scripts/experiments/pd.sh grids      # write the grid files + LaTeX tables only
 #   scripts/experiments/pd.sh tune       # write the grids and submit both job arrays
 #   scripts/experiments/pd.sh summary    # mean +/- std over seeds per configuration, both grids (+ CSV)
 #
-# Stage 2 (best configuration of each signal, 8 fresh seeds 3..10):
+# Stage 2 (best configuration of each signal, 8 fresh seeds 4..11):
 #   scripts/experiments/pd.sh final --formulation ei  --signal value  --alpha 20
 #   scripts/experiments/pd.sh final --formulation ia  --signal reward --alpha 0.1 --beta 0.05
 #
-# Alpha grids: the value signal competes with the advantage (order 10-25 in this game), so the
-# report's alphas are extended upwards; the reward signal competes with the smoothed reward
+# Alpha grids: the value term X_i = F(V_i(o_j)) competes with the advantage, |A| ~ 10-20 during the first 50k
+# steps when the policy is decided.  In the 5M-step grid every alpha below 1 gave |X|/|A| < 1% and runs identical
+# to plain PPO, so the value grid starts at 1.  The reward signal competes with the smoothed reward
 # (e ~ r / (1 - gamma*lambda) ~ 30-100 here), so it keeps the report's range plus 1 and 3.
-# Override anything through the environment, e.g.  SEEDS="1 2 3" NUM_AGENTS=4 scripts/experiments/pd.sh tune
-#   FORMULATIONS="sia" scripts/experiments/pd.sh tune     # plain PPO + SIA (value) + SIA (reward) only: 36 jobs
+# Override anything through the environment, e.g.  SEEDS="1 2 3 4 5" NUM_AGENTS=4 scripts/experiments/pd.sh tune
+#   FORMULATIONS="sia" scripts/experiments/pd.sh tune     # plain PPO + SIA (value) + SIA (reward) only
 #
 # PPO is held fixed across the grid (CleanRL defaults: lr 2.5e-4, clip 0.2, ent 0.01, gamma 0.99, gae 0.95,
 # 8 envs x 128 steps, 4 minibatches x 4 epochs) so that differences are attributable to the social term.
-# For a PPO sensitivity check of a chosen configuration give those runs their own TAG, e.g.
+# For a PPO sensitivity check give those runs their own TAG, e.g. (at ent 0.01 the policy collapses to
+# always-defect within ~40 iterations; a larger entropy bonus keeps mixed rounds alive longer):
 #   TAG=pd_n2_ent0.05 TRAIN_ARGS="--num-envs 8 --num-steps 128 --num-minibatches 4 --ent-coef 0.05" \
-#       scripts/experiments/pd.sh final --formulation sia --signal value --alpha 20
+#       scripts/experiments/pd.sh tune
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 export EMPATHY_REPO=$PWD   # lets the job scripts find cluster.env (they run from /var/spool/slurmd)
 source scripts/slurm/cluster.env
 PY=${PY:-python}
 
-SEEDS=${SEEDS:-"1 2"}
-FINAL_SEEDS=${FINAL_SEEDS:-"3-10"}
+SEEDS=${SEEDS:-"1 2 3"}
+FINAL_SEEDS=${FINAL_SEEDS:-"4-11"}
 NUM_AGENTS=${NUM_AGENTS:-2}
 MAX_CYCLES=${MAX_CYCLES:-100}
-STEPS=${STEPS:-5000000}
+STEPS=${STEPS:-300000}
+TIME=${TIME:-00:30:00}   # SLURM time limit per job
 CONCURRENT=${CONCURRENT:-50}
 FORMULATIONS=${FORMULATIONS:-"ei sia svo ia"}   # social-term formulations to tune (plain PPO is always included)
-VALUE_ALPHAS=${VALUE_ALPHAS:-"0 0.003 0.01 0.03 0.1 0.3 1 3 10 30 100"}
+VALUE_ALPHAS=${VALUE_ALPHAS:-"0 1 3 10 30 100"}
 REWARD_ALPHAS=${REWARD_ALPHAS:-"0 0.003 0.01 0.03 0.1 0.3 1 3"}
 TRAIN_ARGS=${TRAIN_ARGS:-"--num-envs 8 --num-steps 128 --num-minibatches 4"}
 
@@ -63,8 +67,8 @@ case "${1:-}" in
     make_grids ;;
   tune)
     make_grids
-    scripts/slurm/submit.sh "$VALUE_GRID" "$CONCURRENT"
-    scripts/slurm/submit.sh "$REWARD_GRID" "$CONCURRENT" ;;
+    scripts/slurm/submit.sh "$VALUE_GRID" "$CONCURRENT" --time="$TIME"
+    scripts/slurm/submit.sh "$REWARD_GRID" "$CONCURRENT" --time="$TIME" ;;
   final)
     shift
     [ $# -gt 0 ] || { echo "usage: $0 final <train.py args, e.g. --formulation ei --signal value --alpha 20>"; exit 1; }
@@ -72,7 +76,7 @@ case "${1:-}" in
     mkdir -p slurm_logs
     set -x
     sbatch --account="$SLURM_ACCOUNT" --mail-user="$MAIL_USER" --mail-type="$MAIL_TYPE" --job-name="$NAME" \
-      --array="$FINAL_SEEDS" scripts/slurm/run_seeds.sh $PD_ARGS $TRAIN_ARGS "$@"
+      --time="$TIME" --array="$FINAL_SEEDS" scripts/slurm/run_seeds.sh $PD_ARGS $TRAIN_ARGS "$@"
     { set +x; } 2>/dev/null
     echo "runs -> $RUN_ROOT/$NAME" ;;
   summary)
@@ -86,5 +90,5 @@ case "${1:-}" in
         --tags charts/collective_return charts/equality charts/cooperation_rate/player_0 charts/cooperation_rate/player_1
     done ;;
   *)
-    sed -n '2,20p' "$0"; exit 1 ;;
+    sed -n '2,28p' "$0"; exit 1 ;;
 esac

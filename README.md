@@ -43,14 +43,16 @@ However, there is a single blue curve that seems to achieve a much higher reward
 train.py                 single entrypoint: independent PPO learners (CleanRL style) + social term
 evaluate.py              roll out a checkpoint, report metrics, optional video
 empathy_marl/
-  envs.py                env factory: `pd`, `meltingpot:<substrate>`, `debug:image`
+  envs.py                env factory: `pd`, `coin`, `meltingpot:<substrate>`, `debug:image`
   prisoners_dilemma.py   N-player repeated Prisoner's Dilemma (PettingZoo ParallelEnv)
+  coin_game.py           Coin Game (Lerer & Peysakhovich 2017): the PD on a 3x3 grid, the sanity check for the value signal
   agents.py              CNN / MLP trunk, optional LSTM (ppo_atari_lstm.py), one network per agent
   empathy.py             social term F_i (ei, svo, sia, ia) for the value signal (X_i) and the reward signal (intrinsic reward)
-  metrics.py             efficiency / equality / sustainability per episode
+  metrics.py             efficiency / equality / sustainability per episode (+ env-specific episode stats)
 scripts/sweep_pd.sh, sweep_meltingpot.sh, summarize_runs.py   (local sweeps + results table)
 scripts/make_grid.py, scripts/slurm/                          (parameter grids + Compute Canada job arrays)
-scripts/experiments/pd.sh                                     (experiment 1 end to end: tune / final / summary)
+scripts/experiments/pd.sh, coin.sh                            (experiments 1 / 1b end to end: tune / final / summary)
+scripts/plot_curves.py, pd_value_probe.py                     (learning curves from TensorBoard logs; PD critic probe)
 tests/                   pytest suite (alignment, formulas, envs, end-to-end smoke tests)
 legacy/                  original scripts, kept for reference only
 ```
@@ -60,15 +62,20 @@ legacy/                  original scripts, kept for reference only
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt          # Melting Pot (dm-meltingpot / dmlab2d) is Linux only
-python -m pytest tests -q                # 44 tests, ~30 s, no Melting Pot needed
+python -m pytest tests -q                # 60 tests, ~35 s, no Melting Pot needed
 ```
 
 ### Train
 
 ```bash
-# 1. sanity check: repeated Prisoner's Dilemma, per-agent social preference (selfish vs. empathetic)
+# 1. sanity check: Coin Game (the PD on a 3x3 grid), selfish vs. empathetic agent, value signal
+#    (about 3 min for 1M steps on a laptop CPU)
+python train.py --env-id coin --max-cycles 50 --formulation ei --signal value --alpha 0,3 --seed 1 \
+    --num-envs 8 --num-steps 128 --total-timesteps 1000000
+
+# 1b. repeated Prisoner's Dilemma (matrix game; see the note on why it cannot test the value signal)
 python train.py --env-id pd --max-cycles 100 --formulation ei --signal value --alpha 0,20 --seed 1 \
-    --num-envs 8 --num-steps 128 --total-timesteps 5000000
+    --num-envs 8 --num-steps 128 --total-timesteps 300000
 
 # 2. Commons Harvest, feed-forward CNN, one formulation / seed
 python train.py --env-id meltingpot:commons_harvest__open --formulation ei --alpha 0.01 --seed 1
@@ -108,33 +115,56 @@ selfish vs. empathetic).  `--num-agents` sets the player count for `pd` / `debug
 (Melting Pot substrates fix their own).  Every run writes TensorBoard logs, `args.json` and
 `agents.pt` to `runs/<env>__<formulation>_<signal>__<ff|lstm>__<params>__s<seed>__<time>/`.
 Useful TensorBoard tags: `charts/collective_return`, `charts/episodic_return/<agent>`,
-`charts/equality`, `charts/sustainability`, `charts/cooperation_rate/<agent>` (PD only),
+`charts/equality`, `charts/sustainability`, `charts/cooperation_rate/<agent>` (PD: fraction of
+cooperate actions per rollout; Coin Game: fraction of the coins an agent picked up that had its
+own colour, per episode, plus `charts/own_coins/<agent>` and `charts/other_coins/<agent>`),
 `social/term_abs_mean/<agent>` vs `social/advantage_abs_mean/<agent>` (value signal) or
 `social/env_reward_abs_mean/<agent>` (reward signal) to judge the scale of alpha.
 
-Scale of alpha: with `--signal value` the term competes with the advantage (magnitude ~10-25
-in PD after a few updates), so alphas of order 5-100 are needed; with `--signal reward` it
-competes with the reward (order 1).  Note also that `sia`/`ia` on the value signal are
-identically zero whenever two agents are in the *same* observed situation (e.g. both defect
-in a symmetric 2-player PD), so they cannot move a population away from an equitable
-all-defect equilibrium; `ei`/`svo` can.
+Scale of alpha: with `--signal value` the term competes with the advantage, so alpha must be
+read against `social/advantage_abs_mean` (PD: |A| ~ 10-20 while the policy is being decided;
+Coin Game: |A| ~ 1, and |X|/alpha ~ 0.8 for SIA); with `--signal reward` it competes with the
+smoothed reward `e ~ r / (1 - gamma * lambda)`.
 
-### Experiment 1: Prisoner's Dilemma, value signal vs. reward signal
+**Why the Coin Game replaced the PD as the sanity check.**  The 5M-step PD grid
+(`scripts/plot_curves.py`, `scripts/pd_value_probe.py`) showed two things.  (i) The PD stage
+game is memoryless: the observation (last round's actions) says nothing about how well off
+either agent is, so under any state-independent policy `V_i(o_i) = V_i(o_j)` exactly and every
+gap-based value term is zero (measured: |V_0(o_0') - V_0(o_1')| = 0.15 in the first 25k steps,
+numerically 0 after 400k).  The value signal has nothing to read there, whatever alpha.
+(ii) SIA/IA are indifferent between mutual cooperation and mutual defection (both are
+perfectly equitable) and penalise the two mismatched outcomes equally, so against a random
+opponent their differential is `-alpha * g * (1 - 2q)`: a conformity term that accelerates the
+collapse to defection (observed: larger alpha, faster collapse).  In the Coin Game the state
+(positions, coin colour) does encode prospects, the observation is agent-relative so
+`V_i(o_j)` is literally "if I were where you are, with your colour", and the two mismatches
+create different gaps (taking the other's coin: 3, taking your own: 1), so the formulations
+make different predictions.
 
-`scripts/experiments/pd.sh` runs the whole two-stage protocol on the cluster with two grids that
-share the functional forms (EI, SIA, SVO, IA, plus the plain-PPO baseline) and differ only in
-the signal: `grids/pd_n2_value.txt` (our idea, alpha up to 100 because the term competes with
-the advantage) and `grids/pd_n2_reward.txt` (baseline, the report's alpha range plus 1 and 3).
+### Experiment 1: Coin Game / Prisoner's Dilemma, value signal vs. reward signal
+
+`scripts/experiments/coin.sh` and `scripts/experiments/pd.sh` run the same two-stage protocol on
+the cluster with two grids that share the functional forms (EI, SIA, SVO, IA, plus the plain-PPO
+baseline) and differ only in the signal: `grids/<tag>_value.txt` (our idea) and
+`grids/<tag>_reward.txt` (baseline, the report's alpha range plus 1 and 3).  Jobs are capped at
+30 minutes: 1M Coin Game steps or 300k PD steps take 5-10 minutes on two cluster CPUs (in the
+5M-step PD grid nothing changed after ~300k steps).
 
 ```bash
-scripts/experiments/pd.sh tune                                            # stage 1: 2 seeds x 5M steps, both grids (308 jobs)
-scripts/experiments/pd.sh summary                                         # tables + CSVs once the arrays finish
-scripts/experiments/pd.sh final --formulation ei --signal value  --alpha 20            # stage 2: best of each signal,
-scripts/experiments/pd.sh final --formulation ia --signal reward --alpha 0.1 --beta 0.05  #          8 fresh seeds (3..10)
-SEEDS="1 2 3" NUM_AGENTS=4 scripts/experiments/pd.sh tune                 # variants via environment variables
+scripts/experiments/coin.sh tune                                          # stage 1: 3 seeds x 1M steps, both grids (408 jobs)
+scripts/experiments/coin.sh summary                                       # tables + CSVs once the arrays finish
+scripts/experiments/coin.sh final --formulation ei --signal value  --alpha 3             # stage 2: best of each signal,
+scripts/experiments/coin.sh final --formulation ia --signal reward --alpha 0.1 --beta 0.05  #          8 fresh seeds (4..11)
+scripts/experiments/pd.sh tune                                            # the PD grids: 3 seeds x 300k steps (327 jobs)
+SEEDS="1 2 3 4 5" NUM_AGENTS=4 scripts/experiments/pd.sh tune             # variants via environment variables
+TAG=coin_ent0.05 TRAIN_ARGS="--num-envs 8 --num-steps 128 --num-minibatches 4 --ent-coef 0.05" \
+    scripts/experiments/coin.sh tune                                      # PPO sensitivity check under its own tag
 ```
 
-The LaTeX parameter tables for both grids are written next to the grid files.
+The LaTeX parameter tables for both grids are written next to the grid files.  Read
+`charts/cooperation_rate/player_i` (Coin Game: 0.5 = grabs everything, 1.0 = only its own colour),
+`charts/collective_return` (about 0 when both grab everything, +1 per coin under cooperation)
+and `charts/equality` together.
 
 ### Hyper-parameter grids on Compute Canada (SLURM)
 
@@ -193,10 +223,12 @@ per observed agent *j* ("what if I had seen what *j* saw").
 
 ### Observations and the value-based mechanism
 
-For `V_i(s_j)` to say anything about *j*'s situation, `s_j` has to be **agent specific**.  The
-Melting Pot egocentric `RGB` view is.  A "fully observable" variant that gives every agent the
-same global `WORLD.RGB` frame would make `V_i(s_j) = V_i(s_i)` and switch the social term off;
-a full-information setting therefore needs an agent-centred observation (e.g. global frame plus
+For `V_i(s_j)` to say anything about *j*'s situation, `s_j` has to be **agent specific** and the
+environment has to have **state that affects future reward**.  The Melting Pot egocentric `RGB`
+view and the Coin Game's egocentric planes satisfy both; the repeated PD satisfies neither (see
+the note above).  A "fully observable" variant that gives every agent the same global
+`WORLD.RGB` frame would make `V_i(s_j) = V_i(s_i)` and switch the social term off; a
+full-information setting therefore needs an agent-centred observation (e.g. global frame plus
 the agent's own egocentric view, or the agent's position marked in an extra channel).  See
 `empathy_marl/envs.py` (`MELTINGPOT_OBS_KEY`) for the extension point.
 

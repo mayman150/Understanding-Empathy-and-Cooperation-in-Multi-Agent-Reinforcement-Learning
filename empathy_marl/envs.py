@@ -12,7 +12,8 @@ need to know which game it is running:
 
 Supported ``env_id`` values
 ---------------------------
-* ``pd`` / ``prisoners_dilemma``          repeated Prisoner's Dilemma (2 players)
+* ``pd`` / ``prisoners_dilemma``          repeated Prisoner's Dilemma (N players, default 2)
+* ``coin`` / ``coin_game``                Coin Game (Lerer & Peysakhovich 2017), 2 players on a 3x3 grid
 * ``meltingpot:<substrate>``              any Melting Pot substrate through shimmy, e.g.
                                           ``meltingpot:commons_harvest__open``,
                                           ``meltingpot:clean_up``
@@ -34,9 +35,11 @@ import numpy as np
 import supersuit as ss
 from gymnasium import spaces
 
+from empathy_marl.coin_game import CoinGame
 from empathy_marl.prisoners_dilemma import RepeatedPrisonersDilemma
 
 PD_IDS = ("pd", "prisoners_dilemma", "repeated_prisoners_dilemma")
+COIN_IDS = ("coin", "coin_game", "coingame")
 DEBUG_IMAGE_ID = "debug:image"
 MELTINGPOT_PREFIX = "meltingpot:"
 MELTINGPOT_OBS_KEY = "RGB"
@@ -85,6 +88,28 @@ def is_prisoners_dilemma(env_id: str) -> bool:
     return env_id.lower() in PD_IDS
 
 
+def is_coin_game(env_id: str) -> bool:
+    return env_id.lower() in COIN_IDS
+
+
+def _vector_bundle(par_env, env_id: str, num_envs: int, num_cpus: int, cooperate_action: Optional[int]) -> EnvBundle:
+    """Bundle for a ParallelEnv with flat float32 observations (PD, Coin Game)."""
+    agent_names = list(par_env.possible_agents)
+    envs = _vectorize(par_env, num_envs, num_cpus)
+    return EnvBundle(
+        envs=envs,
+        env_id=env_id,
+        num_envs=num_envs,
+        num_agents=len(agent_names),
+        agent_names=agent_names,
+        single_observation_space=envs.observation_space,
+        single_action_space=envs.action_space,
+        obs_type="vector",
+        extract_obs=lambda raw: np.asarray(raw, dtype=np.float32),
+        cooperate_action=cooperate_action,
+    )
+
+
 def _vectorize(par_env, num_envs: int, num_cpus: int):
     venv = ss.pettingzoo_env_to_vec_env_v1(par_env)
     return ss.concat_vec_envs_v1(venv, num_vec_envs=num_envs, num_cpus=num_cpus, base_class="gymnasium")
@@ -99,7 +124,7 @@ def make_envs(
     pd_payoffs: tuple[float, float, float, float] = (3.0, 0.0, 4.0, 1.0),
     render_mode: Optional[str] = None,
 ) -> EnvBundle:
-    """``num_agents`` applies to ``pd`` and ``debug:image``; Melting Pot substrates fix their own player count."""
+    """``num_agents`` applies to ``pd`` and ``debug:image``; the Coin Game and Melting Pot substrates fix their own player count."""
     if num_envs < 1:
         raise ValueError("num_envs must be >= 1")
 
@@ -107,21 +132,11 @@ def make_envs(
         par_env = RepeatedPrisonersDilemma(
             num_rounds=max_cycles, payoffs=pd_payoffs, num_players=num_agents, render_mode=render_mode
         )
-        agent_names = list(par_env.possible_agents)
-        envs = _vectorize(par_env, num_envs, num_cpus)
-        obs_space = envs.observation_space
-        return EnvBundle(
-            envs=envs,
-            env_id=env_id,
-            num_envs=num_envs,
-            num_agents=len(agent_names),
-            agent_names=agent_names,
-            single_observation_space=obs_space,
-            single_action_space=envs.action_space,
-            obs_type="vector",
-            extract_obs=lambda raw: np.asarray(raw, dtype=np.float32),
-            cooperate_action=RepeatedPrisonersDilemma.cooperate_action,
-        )
+        return _vector_bundle(par_env, env_id, num_envs, num_cpus, RepeatedPrisonersDilemma.cooperate_action)
+
+    if is_coin_game(env_id):
+        par_env = CoinGame(num_rounds=max_cycles, render_mode=render_mode)
+        return _vector_bundle(par_env, env_id, num_envs, num_cpus, CoinGame.cooperate_action)
 
     if env_id == DEBUG_IMAGE_ID:
         from empathy_marl.debug_env import DebugImageEnv

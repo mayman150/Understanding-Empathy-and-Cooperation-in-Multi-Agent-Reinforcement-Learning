@@ -11,6 +11,10 @@ common-pool resource appropriation":
 * ``sustainability`` S = mean_i t_i, with t_i the average time step at which agent ``i``
                       receives a positive reward.  Agents that never receive a positive
                       reward are excluded; if no agent does, S = 0.
+* ``stats``           optional, environment specific: ``{key: array (num_agents,)}`` built from
+                      the ``infos[agent]["episode_stats"]`` dicts an environment may attach on
+                      the last step of an episode (e.g. the Coin Game's ``cooperation_rate``);
+                      ``nan`` for agents without that key.
 
 "Peace" (untagged agent steps) is not reported because the zap matrix is a ``WORLD.*``
 observation that the shimmy wrapper strips.
@@ -89,7 +93,7 @@ class MultiAgentEpisodeStatistics:
                 t_i = self.positive_time_sum[e] / self.positive_count[e]
             has_reward = self.positive_count[e] > 0
             sustainability = float(t_i[has_reward].mean()) if has_reward.any() else 0.0
-            infos[e * N]["ma_episode"] = {
+            episode = {
                 "r": returns,
                 "collective": float(returns.sum()),
                 "l": T,
@@ -98,6 +102,13 @@ class MultiAgentEpisodeStatistics:
                 "sustainability": sustainability,
                 "t": round(time.perf_counter() - self.t0, 6),
             }
+            stats: dict[str, np.ndarray] = {}
+            for a in range(N):
+                for key, value in infos[e * N + a].get("episode_stats", {}).items():
+                    stats.setdefault(key, np.full(N, np.nan))[a] = float(value)
+            if stats:
+                episode["stats"] = stats
+            infos[e * N]["ma_episode"] = episode
         if env_done.any():
             self._reset_stats(env_done)
         return obs, rewards, terminations, truncations, infos

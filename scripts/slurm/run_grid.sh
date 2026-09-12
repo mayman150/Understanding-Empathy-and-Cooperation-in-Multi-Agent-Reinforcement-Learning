@@ -19,8 +19,9 @@
 # or directly (mkdir -p slurm_logs first):
 #   sbatch --array=1-455%50 scripts/slurm/run_grid.sh grids/pd_report.txt
 #
-# The header is sized for the CPU-only Prisoner's Dilemma (5M steps: roughly 20-60 min on 2 cluster CPUs).  For
-# Melting Pot pass GPU resources at submit time:
+# The header is sized for the CPU-only matrix / grid games (Prisoner's Dilemma, Coin Game); the experiment
+# scripts pass a tighter limit (--time=00:30:00 for 300k PD / 1M Coin Game steps).  For Melting Pot pass GPU
+# resources at submit time:
 #   scripts/slurm/submit.sh grids/harvest.txt 8 --gres=gpu:1 --cpus-per-task=4 --mem=32GB --time=12:00:00
 #
 # Paths / modules come from scripts/slurm/cluster.env (VENV, PROJECT_DIR, RUN_ROOT, PY_MODULE, ...).
