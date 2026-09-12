@@ -26,6 +26,7 @@
 #       scripts/experiments/pd.sh final --formulation sia --signal value --alpha 20
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+export EMPATHY_REPO=$PWD   # lets the job scripts find cluster.env (they run from /var/spool/slurmd)
 source scripts/slurm/cluster.env
 PY=${PY:-python}
 

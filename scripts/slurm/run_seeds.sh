@@ -23,8 +23,13 @@
 # Runs go to $RUN_ROOT/<job name>/ (override with RUN_DIR); paths / modules come from cluster.env.
 set -euo pipefail
 
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-source "$SCRIPT_DIR/cluster.env"
+# SLURM copies this script to /var/spool/slurmd/..., so the repo cannot be found from BASH_SOURCE.
+# Order: EMPATHY_REPO (exported by submit.sh / pd.sh) -> the directory sbatch was run from -> script location (dry runs).
+for candidate in "${EMPATHY_REPO:-}" "${SLURM_SUBMIT_DIR:-}" "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)"; do
+  if [ -n "$candidate" ] && [ -f "$candidate/scripts/slurm/cluster.env" ]; then REPO=$candidate; break; fi
+done
+[ -n "${REPO:-}" ] || { echo "cannot locate the repository (scripts/slurm/cluster.env); export EMPATHY_REPO=<repo path>"; exit 1; }
+source "$REPO/scripts/slurm/cluster.env"
 RUN_DIR=${RUN_DIR:-$RUN_ROOT/${SLURM_JOB_NAME:-seeds}}
 
 if command -v module >/dev/null 2>&1; then module load "$STDENV" "$PY_MODULE"; fi

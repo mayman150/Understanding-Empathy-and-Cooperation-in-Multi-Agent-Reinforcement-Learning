@@ -14,6 +14,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$SCRIPT_DIR/cluster.env"
 cd "$SCRIPT_DIR/../.."
+export EMPATHY_REPO=$PWD   # lets the job scripts find cluster.env (they run from /var/spool/slurmd)
 
 GRID=${1:?usage: scripts/slurm/submit.sh <grid file> [max concurrent] [sbatch options...]}
 CONCURRENT=${2:-50}
