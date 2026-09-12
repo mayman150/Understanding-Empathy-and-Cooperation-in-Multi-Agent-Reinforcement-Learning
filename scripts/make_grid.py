@@ -119,7 +119,7 @@ def main() -> None:
     p.add_argument("--env-id", default="pd")
     p.add_argument("--num-agents", type=int, default=2)
     p.add_argument("--max-cycles", type=int, default=100)
-    p.add_argument("--total-timesteps", type=int, default=1_000_000)
+    p.add_argument("--total-timesteps", type=int, default=5_000_000)
     p.add_argument("--formulations", nargs="+", default=["none", "ei", "sia", "svo", "ia"])
     p.add_argument("--signals", nargs="+", default=["value", "reward"], choices=["value", "reward"])
     p.add_argument("--alphas", nargs="+", type=float, default=REPORT_ALPHAS)

@@ -27,7 +27,7 @@ BETA=${BETA:-"same"}                           # ia: advantageous coefficient; "
 PHI=${PHI:-0.7854}                             # svo angle (pi/4)
 MIXED=${MIXED:-""}                             # per-agent alpha lists, e.g. "0,20 20,0" (2 players)
 PARALLEL=${PARALLEL:-2}
-COMMON=${COMMON:-"--env-id pd --max-cycles 100 --num-envs 8 --num-steps 128 --num-minibatches 4 --total-timesteps 1000000 --no-cuda"}
+COMMON=${COMMON:-"--env-id pd --max-cycles 100 --num-envs 8 --num-steps 128 --num-minibatches 4 --total-timesteps 5000000 --no-cuda"}
 EXTRA=${EXTRA:-""}                             # e.g. "--recurrent"
 
 run() { echo "+ $*"; $PY train.py $COMMON $EXTRA --num-agents "$NUM_AGENTS" --run-dir "$RUN_DIR" "$@"; }

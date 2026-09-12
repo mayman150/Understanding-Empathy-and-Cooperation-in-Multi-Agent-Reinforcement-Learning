@@ -8,7 +8,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=4GB
-#SBATCH --time=01:00:00
+#SBATCH --time=03:00:00
 #SBATCH --cpu-freq=Performance
 #
 # SLURM job-array worker (Compute Canada / Alliance): array task N runs line N of a grid file
@@ -19,7 +19,7 @@
 # or directly (mkdir -p slurm_logs first):
 #   sbatch --array=1-455%50 scripts/slurm/run_grid.sh grids/pd_report.txt
 #
-# The header is sized for the CPU-only Prisoner's Dilemma (~1M steps in a few minutes).  For
+# The header is sized for the CPU-only Prisoner's Dilemma (5M steps: roughly 20-60 min on 2 cluster CPUs).  For
 # Melting Pot pass GPU resources at submit time:
 #   scripts/slurm/submit.sh grids/harvest.txt 8 --gres=gpu:1 --cpus-per-task=4 --mem=32GB --time=12:00:00
 #

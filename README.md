@@ -67,7 +67,7 @@ python -m pytest tests -q                # 44 tests, ~30 s, no Melting Pot neede
 ```bash
 # 1. sanity check: repeated Prisoner's Dilemma, per-agent social preference (selfish vs. empathetic)
 python train.py --env-id pd --max-cycles 100 --formulation ei --signal value --alpha 0,20 --seed 1 \
-    --num-envs 8 --num-steps 128 --total-timesteps 1000000
+    --num-envs 8 --num-steps 128 --total-timesteps 5000000
 
 # 2. Commons Harvest, feed-forward CNN, one formulation / seed
 python train.py --env-id meltingpot:commons_harvest__open --formulation ei --alpha 0.01 --seed 1
@@ -141,7 +141,7 @@ python scripts/make_grid.py --env-id pd --signals value --alphas 0 0.1 1 3 10 30
 # selfish player_0 vs. empathetic player_1
 python scripts/make_grid.py --env-id pd --mixed "0,{a}" --alphas 0 1 10 30 --seeds 1 2 3 4 5 -o grids/pd_mixed.txt
 
-scripts/slurm/submit.sh grids/pd_report.txt 50                 # job array, <= 50 concurrent CPU jobs
+scripts/slurm/submit.sh grids/pd_report.txt 50                 # job array, <= 50 concurrent CPU jobs (5M steps each)
 scripts/slurm/submit.sh grids/harvest.txt 8 --gres=gpu:1 --cpus-per-task=4 --mem=32GB --time=12:00:00
 
 # one configuration x many seeds (array task N -> --seed N), e.g. the best configuration with 10 seeds

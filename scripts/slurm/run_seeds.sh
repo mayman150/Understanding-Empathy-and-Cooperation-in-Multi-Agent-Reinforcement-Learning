@@ -8,7 +8,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=4GB
-#SBATCH --time=01:00:00
+#SBATCH --time=03:00:00
 #SBATCH --cpu-freq=Performance
 #
 # One configuration, many seeds: array task N runs train.py with --seed N (same pattern as
