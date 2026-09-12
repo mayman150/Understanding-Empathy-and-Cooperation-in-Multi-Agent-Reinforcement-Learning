@@ -31,6 +31,11 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 export EMPATHY_REPO=$PWD   # lets the job scripts find cluster.env (they run from /var/spool/slurmd)
 source scripts/slurm/cluster.env
+# use the cluster virtualenv (tensorboard, numpy, ...) when it exists, so `summary` works from a login shell
+if [ -z "${PY:-}" ] && [ -x "$VENV/bin/python" ]; then
+  if command -v module >/dev/null 2>&1; then module load "$STDENV" "$PY_MODULE" 2>/dev/null || true; fi
+  PY="$VENV/bin/python"
+fi
 PY=${PY:-python}
 
 SEEDS=${SEEDS:-"1 2 3"}
