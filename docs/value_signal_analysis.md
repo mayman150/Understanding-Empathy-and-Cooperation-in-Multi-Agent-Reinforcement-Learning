@@ -216,29 +216,51 @@ In the Coin Game `f_i` is learnable exactly (+1 when I land on a coin, -2 when t
 coin), so the prediction is that imagined-EI approaches EI-reward (0.996) rather than the value signal's
 0.80.  In Harvest the analogous model ("eating an apple gives +1") is equally learnable.
 
-### 5.2 Relative scaling of any social term (`--social-scale`)
+### 5.2 Relative scaling of any social term (`--social-scale`): hygiene, not a fix
 
-Standardise `X` to the advantage's scale within the batch, `Xtilde = alpha * X * std(A) / std(X)`, so that
-`alpha = 1` means "the other counts as much as my own advantage" and the grid is comparable across games
-and signals.  This keeps PPO's own signal alive and would have flagged the ratios of 4.2 immediately.  It
-does not by itself fix 4.1 or 4.3.
+Standardise `X` to the advantage's scale within the batch, `Xtilde = alpha * X * std(A) / std(X)` (with a
+floor on `std(X)`, since in the PD `X` was numerically zero), so that `alpha = 1` means "the other counts
+as much as my own advantage".  What this buys: `alpha` has the same meaning across games, signals and
+training phases (today `X` is on the value scale and `A` on the TD-error scale, and both drift); the
+method and its control are compared at the same relative weight; and domination of the advantage becomes
+a deliberate choice instead of the accident of 4.2.  What it does not do: it changes neither the direction
+of the term, nor its one-step myopia (4.1), nor the forecast problem (4.3).  Apply it to every variant,
+including the controls, and report `alpha` as a relative weight.  Like advantage normalisation, it makes
+the effective weight depend on batch statistics; that is a known trade-off, not a new one.
 
-### 5.3 Change instead of level (`--value-diff`), with its control
+### 5.3 Change instead of level: not a fix (kept for the record)
 
-`X_i = alpha * [V_i(o_j^{t+1}) - V_i(o_j^t)]` (for gap terms, the gap of changes).  As an advantage
-coefficient this is still the myopic construction of 4.1, but it removes the level noise and the
-frozen-board pathology (a board that never changes has zero change).  Its control is
-`alpha * [V_i(o_i^{t+1}) - V_i(o_i^t)]`, which is approximately "PPO with the immediate reward
-under-weighted".  Since the Coin Game's dilemma is exactly "+1 now versus board quality", this control may
-cooperate as well; if it does, the finding is that patience / risk aversion, not empathy, drives the
-effect.  Either outcome is informative.
+An earlier draft proposed `X_i = alpha * [V_i(o_j^{t+1}) - V_i(o_j^t)]` as an advantage coefficient,
+claiming it removes the level noise and the frozen-board pathology.  That claim was wrong.  `V_i(o_j^t)`
+does not depend on agent `i`'s action at `t` (the observation is fixed before the action), so subtracting
+it is subtracting a baseline: the expected policy gradient is *identical* to that of the level term
+(Williams 1992), and so is the objective (4.1), pathologies included.  The only differences are second
+order: lower variance of the estimate and, because `A + X` is normalised jointly, a smaller `std(X)` that
+leaves the advantage more weight, which is exactly what 5.2 does explicitly.  Fed in as a *reward*
+through GAE instead, the difference is potential-based and inert (4.3).  So the "change" variant is either
+the current method with a baseline or nothing, and its proposed control coincides with the existing
+control in expectation.  Dropped as a candidate; the baseline could be kept as a variance-reduction detail
+of the current term if that term is reported at all.
 
 ### 5.4 Counterfactual influence on the other's prospects (later)
 
-`X_i = alpha * [V_i(o_j^{t+1}) - b(o^t)]` with a learned baseline `b` for the expected next value of the
-other, isolating the causal effect of `i`'s action, in the spirit of the counterfactual influence reward of
-Jaques et al. (2019), who measure the effect of an agent's action on the other agents' *actions*.  More
-machinery; only worth it if 5.1-5.3 leave something unexplained.
+The causal effect of my action on the other's prospects is
+`D_i^t = V_i(o_j^{t+1}) - E_{a' ~ pi_i}[ V_i(o_j^{t+1}) | s^t, a' ]`, the realised next value minus what
+my other actions would have produced.  Two ways to use it, with very different status:
+
+* As an *advantage coefficient* it is the level term minus a baseline that does not depend on my action
+  (the same holds if the baseline also conditions on the other agents' actions, as in COMA-style
+  counterfactual baselines), so the expected gradient and the objective are those of the current method;
+  only the variance changes.  Same verdict as 5.3.
+* As a per-step *reward* fed through GAE it is a different objective: maximise the discounted sum of my
+  causal contributions to the other's outlook.  It does not telescope (it is not a difference of one
+  function at consecutive states), so it is not inert, and it is far-sighted.  It is also not the other's
+  return: it credits me for improving the other's outlook without debiting the later realisation of that
+  outlook by the other.  This is in the spirit of the counterfactual influence reward of Jaques et al.
+  (2019), who reward the effect of an agent's action on the other agents' *actions*.
+
+More machinery (a counterfactual expectation over my actions each step); only worth it if 5.1 and 5.2 leave
+something unexplained, and then only in the reward form.
 
 ## 6. Protocol and pre-registered predictions
 
@@ -252,7 +274,7 @@ ceiling.  Predictions, stated before running:
 | own-value difference `alpha * [gamma V_i(o_i') - V_i(o_i)]` as a shaping *reward* (through GAE) | cooperation 0.50 (policy-invariant) | cooperation > 0.5 would mean the shaping argument is wrong or PPO's finite-sample dynamics matter more than the limit |
 | critic probe on EI-value checkpoints (50k, 200k, 2M) | "other adjacent to my coin" acquires a negative value between 50k and 200k | no such change: the EI-value story in 4.4 is wrong |
 | imagined-EI (5.1) | approaches EI-reward (about 1.0 cooperation) | stays near 0.8 or below: the reward model, not the signal, is the bottleneck |
-| value-diff control (5.3) | cooperates (patience effect) or not; either way it is compared with value-diff EI on the same seeds | |
+| current EI-value and control with relative scaling (5.2) at `alpha` in {0.3, 1, 3} | the ranking EI-value > control survives at moderate relative weights | if the gap only exists when `X` dominates, the social increment is a large-weight artefact |
 
 The comparison that decides how the paper is framed is *other-regarding term vs. own-value control at the
 same PPO settings*, not *value signal vs. plain PPO*.
@@ -277,6 +299,7 @@ same PPO settings*, not *value signal vs. plain PPO*.
 * Devlin, S., Kudenko, D. (2012). Dynamic potential-based reward shaping. AAMAS.
 * Fehr, E., Schmidt, K. M. (1999). A theory of fairness, competition, and cooperation. QJE.
 * Foerster, J. et al. (2018). Learning with Opponent-Learning Awareness. AAMAS. arXiv:1709.04326.
+* Foerster, J. et al. (2018). Counterfactual Multi-Agent Policy Gradients (COMA). AAAI. arXiv:1705.08926.
 * Hughes, E. et al. (2018). Inequity aversion improves cooperation in intertemporal social dilemmas. NeurIPS. arXiv:1803.08884.
 * Jaques, N. et al. (2019). Social Influence as Intrinsic Motivation for Multi-Agent Deep RL. ICML. arXiv:1810.08647.
 * Lerer, A., Peysakhovich, A. (2017). Maintaining cooperation in complex social dilemmas using deep RL. arXiv:1707.01068.
