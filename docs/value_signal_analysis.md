@@ -158,10 +158,16 @@ the other colour (the safe state); taking the other's coin gives +1 now but resp
 state); leaving the other's coin keeps the safe state.  A return-maximiser takes the other's coin because
 +1 now outweighs the state difference; an agent that is greedy for next-state value (4.1, 4.2) does not.
 The observable consequence is "takes own coins, leaves the other's", i.e. cooperation, from
-self-protection.  This is a hypothesis.  It predicts (a) a probe of the trained critic shows
-`V_i(other's coin on board) > V_i(my coin on board)`, and (b) a potential-based version of the control,
-`alpha * [gamma V_i(o_i') - V_i(o_i)]`, produces no cooperation (0.50), since it cannot change the
-optimal policy.
+self-protection.  In numbers, with `S` the critic's board score (`S(A)` for "other's coin on the board",
+`S(B)` for "my coin on the board") and Red next to the other's coin: stealing gives `1 + alpha * S(B)`,
+leaving gives `alpha * S(A)`, so leaving wins whenever `alpha * (S(A) - S(B)) > 1`; the true return does
+not show this difference because after leaving, the other agent takes the coin and the board becomes `B`
+anyway.  This is a hypothesis.  It predicts (a) a probe of the trained critic shows `S(A) > S(B)`, and
+(b) the effect depends on the term being a non-potential shaping: fed into GAE *as a reward*, the level
+`alpha * V_i(o_i')` should still produce cooperation (it changes the objective), while the difference
+`alpha * [gamma V_i(o_i') - V_i(o_i)]` should not (policy-invariant, Section 4.3).  Note that the
+difference cannot be tested as an *advantage coefficient*: there `V_i(o_i)` is action-independent, acts as
+a baseline, and the update is identical to the level version in expectation.
 
 EI-value's trajectory is different from the control's (anti-social first: cooperation 0.29 and collective
 return -12.5 at 70k steps; then a monotone climb to the best value-signal result with the tightest CI).
@@ -242,7 +248,8 @@ ceiling.  Predictions, stated before running:
 
 | experiment | if the hypotheses of 4.4 hold | if they do not |
 |---|---|---|
-| potential-based control `gamma V_i(o_i') - V_i(o_i)` | cooperation 0.50 | cooperation > 0.5 would mean the shaping argument is wrong or PPO's finite-sample dynamics matter more than the limit |
+| own-value level `alpha * V_i(o_i')` as a shaping *reward* (through GAE) | cooperation > 0.5 (changes the objective) | no effect would mean the myopic use, not the level, is what matters |
+| own-value difference `alpha * [gamma V_i(o_i') - V_i(o_i)]` as a shaping *reward* (through GAE) | cooperation 0.50 (policy-invariant) | cooperation > 0.5 would mean the shaping argument is wrong or PPO's finite-sample dynamics matter more than the limit |
 | critic probe on EI-value checkpoints (50k, 200k, 2M) | "other adjacent to my coin" acquires a negative value between 50k and 200k | no such change: the EI-value story in 4.4 is wrong |
 | imagined-EI (5.1) | approaches EI-reward (about 1.0 cooperation) | stays near 0.8 or below: the reward model, not the signal, is the bottleneck |
 | value-diff control (5.3) | cooperates (patience effect) or not; either way it is compared with value-diff EI on the same seeds | |
