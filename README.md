@@ -52,7 +52,8 @@ empathy_marl/
 scripts/sweep_pd.sh, sweep_meltingpot.sh, summarize_runs.py   (local sweeps + results table)
 scripts/make_grid.py, scripts/slurm/                          (parameter grids + Compute Canada job arrays)
 scripts/experiments/pd.sh, coin.sh                            (experiments 1 / 1b end to end: tune / final / ppo / summary)
-scripts/plot_curves.py, best_configs.py, pd_value_probe.py    (learning curves; per-method ranking across folders; PD critic probe)
+scripts/plot_curves.py, plot_final.py, best_configs.py        (learning curves; final figures with 95% CIs; per-method ranking)
+scripts/pd_value_probe.py                                     (PD critic probe)
 tests/                   pytest suite (alignment, formulas, envs, end-to-end smoke tests)
 legacy/                  original scripts, kept for reference only
 ```
