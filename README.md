@@ -144,7 +144,7 @@ phi in {pi/2, pi/3, pi/4, pi/6}, beta in {alpha/2, alpha/3, alpha/10}; alpha = 0
 plain-PPO baseline per seed), crossed with `--signals` and `--seeds`.  `scripts/slurm/`
 runs a grid file as a job array (task N = line N):
 
-Account, e-mail, modules and paths (project space `~/projects/aip-machado/$USER/`, venv, run
+Account, e-mail, modules and paths (repository location auto-detected, venv under `~/projects/aip-machado/$USER/MARL/envs/`, run
 root under `$SCRATCH`) are defined once in `scripts/slurm/cluster.env`; every value can be
 overridden from the environment.
 
