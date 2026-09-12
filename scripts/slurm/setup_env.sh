@@ -22,6 +22,7 @@ export CC=gcc CXX=g++
 mkdir -p "$(dirname "$VENV")"
 python -m venv "$VENV"   # idempotent: re-running the script resumes an interrupted install
 source "$VENV/bin/activate"
+export PYTHONNOUSERSITE=1   # ignore ~/.local packages while installing / verifying
 pip install --no-index --upgrade pip
 
 # from the Alliance wheelhouse when available (torch picks the cluster's CUDA build automatically)
@@ -39,4 +40,4 @@ print("torch", torch.__version__, "cuda build:", torch.version.cuda, "| gymnasiu
       "| pettingzoo", pettingzoo.__version__, "| supersuit", supersuit.__version__)
 EOF
 echo "venv ready: $VENV"
-echo "next:  cd $PROJECT_DIR && python -m pytest tests -q"
+echo "next:  source $VENV/bin/activate && cd $PROJECT_DIR && python -m pytest tests -q   (use python -m pytest, not a ~/.local pytest)"

@@ -34,7 +34,9 @@ source "$SCRIPT_DIR/cluster.env"
 RUN_DIR=${RUN_DIR:-$RUN_ROOT/$(basename "$GRID" .txt)}
 
 if command -v module >/dev/null 2>&1; then module load "$STDENV" "$PY_MODULE"; fi
-if [ -f "$VENV/bin/activate" ]; then source "$VENV/bin/activate"; fi
+[ -f "$VENV/bin/activate" ] || { echo "virtualenv not found at $VENV -- run scripts/slurm/setup_env.sh (or set VENV)"; exit 1; }
+source "$VENV/bin/activate"
+export PYTHONNOUSERSITE=1   # never pick up ~/.local packages instead of the venv
 cd "$PROJECT_DIR"
 mkdir -p "$RUN_DIR"
 
