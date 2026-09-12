@@ -2,20 +2,19 @@
 # One-time environment setup on a Compute Canada / Alliance LOGIN node (compute nodes on most
 # clusters have no internet, so the virtualenv must be built here and reused by the jobs).
 #
-#   VENV=~/envs/empathy scripts/slurm/setup_env.sh                 # PD / debug env only
-#   WITH_MELTINGPOT=1 VENV=~/envs/empathy scripts/slurm/setup_env.sh   # + dm-meltingpot (Linux x86_64, needs ~2 GB)
+#   scripts/slurm/setup_env.sh                       # PD / debug env only
+#   WITH_MELTINGPOT=1 scripts/slurm/setup_env.sh     # + dm-meltingpot (Linux x86_64, ~2 GB)
 #
-# Packages available in the Alliance wheelhouse are installed with --no-index (fast, cluster-optimised
-# builds); the rest comes from PyPI.  Adjust PY_MODULE to a version present on your cluster
-# (`module avail python`).
+# VENV / PY_MODULE / STDENV come from scripts/slurm/cluster.env (default venv lives in project
+# space, ~/projects/aip-machado/$USER/envs/empathy).  Packages available in the Alliance
+# wheelhouse are installed with --no-index (cluster-optimised builds); the rest comes from PyPI.
 set -euo pipefail
-
-VENV=${VENV:-$HOME/envs/empathy}
-PY_MODULE=${PY_MODULE:-python/3.11}
-STDENV=${STDENV:-StdEnv/2023}
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "$SCRIPT_DIR/cluster.env"
 WITH_MELTINGPOT=${WITH_MELTINGPOT:-0}
 
 if command -v module >/dev/null 2>&1; then module load "$STDENV" "$PY_MODULE"; fi
+mkdir -p "$(dirname "$VENV")"
 python -m venv "$VENV"
 source "$VENV/bin/activate"
 pip install --no-index --upgrade pip
@@ -34,4 +33,5 @@ import torch, gymnasium, pettingzoo, supersuit, tyro
 print("torch", torch.__version__, "cuda build:", torch.version.cuda, "| gymnasium", gymnasium.__version__,
       "| pettingzoo", pettingzoo.__version__, "| supersuit", supersuit.__version__)
 EOF
-echo "venv ready: $VENV   (jobs use it via VENV=$VENV, see scripts/slurm/run_grid.sh)"
+echo "venv ready: $VENV"
+echo "next:  cd $PROJECT_DIR && python -m pytest tests -q"

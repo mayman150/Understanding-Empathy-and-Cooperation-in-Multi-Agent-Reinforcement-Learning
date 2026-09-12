@@ -126,9 +126,13 @@ phi in {pi/2, pi/3, pi/4, pi/6}, beta in {alpha/2, alpha/3, alpha/10}; alpha = 0
 plain-PPO baseline per seed), crossed with `--signals` and `--seeds`.  `scripts/slurm/`
 runs a grid file as a job array (task N = line N):
 
+Account, e-mail, modules and paths (project space `~/projects/aip-machado/$USER/`, venv, run
+root under `$SCRATCH`) are defined once in `scripts/slurm/cluster.env`; every value can be
+overridden from the environment.
+
 ```bash
-# once, on a login node (compute nodes have no internet): build the virtualenv
-VENV=~/envs/empathy scripts/slurm/setup_env.sh              # add WITH_MELTINGPOT=1 for Melting Pot
+# once, on a login node (compute nodes have no internet): build the virtualenv in project space
+scripts/slurm/setup_env.sh                                     # add WITH_MELTINGPOT=1 for Melting Pot
 
 # the report's table on the 2-player PD, value + reward signal, 5 seeds  -> 455 jobs
 python scripts/make_grid.py --env-id pd --seeds 1 2 3 4 5 -o grids/pd_report.txt
@@ -137,17 +141,20 @@ python scripts/make_grid.py --env-id pd --signals value --alphas 0 0.1 1 3 10 30
 # selfish player_0 vs. empathetic player_1
 python scripts/make_grid.py --env-id pd --mixed "0,{a}" --alphas 0 1 10 30 --seeds 1 2 3 4 5 -o grids/pd_mixed.txt
 
-export SLURM_ACCOUNT=def-XXXX
-scripts/slurm/submit.sh grids/pd_report.txt 50                 # <= 50 concurrent CPU jobs, ~5 min each
-scripts/slurm/submit.sh grids/harvest.txt 8 --gres=gpu:1 --cpus-per-task=4 --mem=16G --time=12:00:00
+scripts/slurm/submit.sh grids/pd_report.txt 50                 # job array, <= 50 concurrent CPU jobs
+scripts/slurm/submit.sh grids/harvest.txt 8 --gres=gpu:1 --cpus-per-task=4 --mem=32GB --time=12:00:00
+
+# one configuration x many seeds (array task N -> --seed N), e.g. the best configuration with 10 seeds
+mkdir -p slurm_logs
+sbatch --array=1-10 --job-name=pd_ei_best scripts/slurm/run_seeds.sh --env-id pd --formulation ei --signal value --alpha 20
 
 python scripts/summarize_runs.py $SCRATCH/empathy_runs/pd_report --csv pd_report.csv
 python scripts/make_grid.py --seeds 1 2 3 4 5 --latex          # the table for the paper
 ```
 
-Runs land in `$SCRATCH/empathy_runs/<grid name>/` (override with `RUN_DIR`), SLURM logs in
-`slurm_logs/`.  `run_grid.sh` can be dry-run locally:
-`SLURM_ARRAY_TASK_ID=3 VENV=.venv scripts/slurm/run_grid.sh grids/pd_report.txt`.
+Runs land in `$SCRATCH/empathy_runs/<grid or job name>/` (override with `RUN_DIR`), SLURM
+logs in `slurm_logs/<name>_<array id>_<task>.out|err`.  Both workers can be dry-run without
+SLURM: `SLURM_ARRAY_TASK_ID=3 VENV=.venv PROJECT_DIR=$PWD RUN_ROOT=/tmp/runs scripts/slurm/run_grid.sh grids/pd_report.txt`.
 
 ### Evaluate
 
