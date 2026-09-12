@@ -1,0 +1,288 @@
+# Empathy from one's own value function: what the "value signal" does, what we measured, and how to fix it
+
+*Working note, September 2026.  Statements about our own runs are measurements (8 fresh seeds, 95 %
+confidence intervals unless stated otherwise).  Statements about the literature carry a citation.
+Everything else is marked as a derivation or as a hypothesis with the experiment that would test it.*
+
+---
+
+## 1. Setting and notation
+
+We work in a partially observable Markov game (stochastic game) with `N` agents (Shapley 1953; Littman
+1994).  At step `t` agent `i` receives a private observation `o_i^t`, takes `a_i^t`, and receives a reward
+`r_i^t` that depends on the joint action.  Each agent maximises its own discounted return
+`J_i = E[ sum_t gamma^t r_i^t ]`.  Learning is fully decentralised: one independent PPO learner per agent
+(Schulman et al. 2017; CleanRL implementation), with a critic `V_i` trained on agent `i`'s own returns from
+agent `i`'s own observations, and the generalised advantage estimate `A_i^t` (Schulman et al. 2016).  In the
+code (`train.py`) the advantage that enters the clipped surrogate is normalised per minibatch
+(`norm_adv`), which matters below.
+
+A *social preference* is a function `F_i(z)` of a vector `z` whose entry `z_ij` is "agent `i`'s estimate
+of how well off agent `j` is".  With `zbar_i` the mean over `j != i` (`empathy_marl/empathy.py`):
+
+| formulation | `F_i(z)` | origin |
+|---|---|---|
+| EI  | `alpha * zbar_i` | "empathetic influence": weight on the others' welfare |
+| SVO | `alpha * (cos(phi) z_ii + sin(phi) zbar_i)` | social value orientation; the `cos/sin` form is the one used by Schwarting et al. (2019) and McKee et al. (2020) / Madhushani et al. (2023) |
+| SIA | `-alpha * |z_ii - zbar_i|` | symmetric inequity aversion |
+| IA  | `-alpha/(N-1) sum_j max(z_ij - z_ii, 0) - beta/(N-1) sum_j max(z_ii - z_ij, 0)` | Fehr & Schmidt (1999); Hughes et al. (2018) |
+
+The two "signals" differ only in what `z` is and where `F_i` enters.
+
+## 2. The two signals as implemented
+
+### 2.1 Reward signal (the literature)
+
+`z_ij = e_j^t`, the temporally smoothed reward of agent `j`, `e_j^t = gamma * lambda * e_j^{t-1} + r_j^t`, and
+`F_i(e)` is an intrinsic reward added to `r_i` before the return is computed.  This is exactly the
+construction of Hughes et al. (2018, eqs. 3-4), who write that they "allow agents to observe the smoothed
+reward of every player on each timestep" and report their strongest results at `alpha = 5, beta = 0.05`
+(with `lambda = 0.975`).  With `lambda = 0` and the SVO form it is the effective reward
+`r_i cos(theta) + rbar_{-i} sin(theta)` of Schwarting et al. (2019) / McKee et al. (2020).  The reward
+signal therefore requires access to the other agents' rewards.
+
+### 2.2 Value signal (our proposal)
+
+`z_ij = V_i(o_j^{t+1})`: agent `i`'s **own** critic evaluated on agent `j`'s next observation.  No agent
+ever sees another agent's reward.  `X_i^t = F_i(z)` is computed once per rollout under `no_grad` and added
+to the advantage: the PPO surrogate uses `A_i^t + X_i^t` (then normalised).  The term is masked at episode
+ends.
+
+The closest prior work is *Empathic DQN* (Bussmann, Heinerman & Lehman 2019), which also evaluates the
+agent's own value function on a constructed state in which the two agents' positions are swapped, and
+combines self-centred and other-centred value with a "selfishness" weight; they assume "some types of
+reward ... may generalize across agents" and test in gridworlds against fixed co-players.  Raileanu et al.
+(2018) use the agent's own *policy* to infer another agent's hidden goal (self other-modeling).  Our
+setting differs in that both agents learn, the term enters a policy-gradient advantage rather than a
+Q-target, and we compare against the reward-access baseline with the same functional forms.
+
+## 3. What we measured
+
+### 3.1 Repeated Prisoner's Dilemma (2 players, 5M steps, 2 seeds, SIA, value signal)
+
+* Every configuration, including plain PPO, converged to mutual defection within about 300k steps
+  (final cooperation 0.000, policy entropy 0).  Larger `alpha` made the collapse *faster*, monotonically.
+* The measured gap `|V_0(o_0') - V_0(o_1')|` was 0.15 in the first 25k steps (untrained critic), 0.007 by
+  50k, and numerically zero from 400k on.  Under any state-independent policy the PD's one-round
+  observation carries no information about the future, so `V_i(o_i) = V_i(o_j)` exactly and every
+  gap-based value term is identically zero; for EI/SVO the term is a constant that advantage
+  normalisation removes.  (Derivation, confirmed by the measurement.)
+* Independently of the signal, SIA's differential against an opponent that cooperates with probability
+  `q` is `-alpha * g * (1 - 2q)` (with `g` the gap after a mismatched round): it favours matching the
+  majority action, which is why it accelerates defection.  (Derivation; observed.)
+
+### 3.2 Coin Game (Lerer & Peysakhovich 2017; rules as in LOLA, Foerster et al. 2018: +1 for any coin, the
+owner loses 2 when the other agent takes a coin of the owner's colour)
+
+Stage B, each method at its own best configuration selected on separate tuning seeds (see
+`scripts/best_configs.py` for the protocol), 8 fresh seeds, 2M steps.  Final = mean over the last 200k
+steps; `+/-` = half-width of the 95 % CI over seeds.  Cooperation rate = own-colour share of an agent's
+pickups (0.5 = grabs everything, 1.0 = only its own colour), averaged over the two agents.
+
+| method | collective return | cooperation rate | vs. own-value control |
+|---|---|---|---|
+| plain PPO | 0.00 +/- 0.04 | 0.500 +/- 0.000 | |
+| **own-value control** (`alpha * V_i(o_i')`, no other-regarding term) | 15.60 +/- 2.20 | 0.760 +/- 0.058 | |
+| EI, value signal | 19.56 +/- 1.03 | 0.802 +/- 0.009 | +4.0 (z = 3.9) / +0.04 (n.s.) |
+| IA, value signal | 18.15 +/- 1.72 | 0.798 +/- 0.040 | +2.5 (z = 2.2) / +0.04 (n.s.) |
+| SVO (phi = pi/6), value signal | 15.80 +/- 0.94 | 0.833 +/- 0.021 | +0.2 (n.s.) / +0.07 (z = 2.8) |
+| SIA, value signal | 3.79 +/- 1.95 | 0.537 +/- 0.022 | |
+| EI, reward signal (has reward access) | 33.27 +/- 0.17 | 0.996 +/- 0.001 | |
+| IA, reward signal | 5.06 +/- 0.76 | 0.614 +/- 0.015 | |
+| SIA, reward signal | 6.11 +/- 1.43 | 0.627 +/- 0.026 | |
+
+Three facts to keep in mind for the analysis:
+
+1. The value signal does produce cooperation without reward access (0 -> 16-20 collective return, 0.50 ->
+   0.80 cooperation), robustly across formulations and seeds.
+2. A term with **no** other-regarding component, `alpha * V_i(o_i')`, produces most of it (15.6 / 0.76).
+   The other-regarding part adds a few points at most: significant for EI-value on collective return and
+   for SVO-value on cooperation rate, not for the rest.
+3. At every `alpha` that had an effect, the social term was 2 to 500 times the advantage
+   (`social/term_abs_mean` vs `social/advantage_abs_mean`).
+
+## 4. Analysis
+
+### 4.1 What adding `X` to the advantage does (derivation)
+
+The policy-gradient theorem gives `grad J = E[ grad log pi(a|s) * Q(s,a) ]` (Sutton et al. 2000).  Any
+*baseline* `b(s)` that does not depend on the action can be subtracted without changing this expectation
+(Williams 1992); a term that depends on the action, or on the next state, is not a baseline and changes
+what is being optimised unless it is explicitly corrected for (see Tucker et al. 2018 for the discussion
+of action-dependent baselines).  Our `X_i^t = F_i(V_i(o^{t+1}))` depends on `s^{t+1}` and hence on `a^t`.
+Writing `Xbar(s, a) = E[X | s, a]`, the score-function identity gives
+
+    E[ grad log pi(a|s) * X ] = grad_theta E_{a ~ pi(.|s)} [ Xbar(s, a) ].
+
+So the modified estimator is the gradient of `J_i + alpha_eff * E_s E_{a~pi} [Xbar(s,a)]`: the agent
+maximises its return **plus a one-step-ahead, undiscounted, non-bootstrapped preference for next states with
+high `F_i(V_i(.))`**.  Nothing propagates this preference through time; it is myopic by construction.  This
+is a correct description of the current method, not a criticism in itself, but it tells us what the
+method is: greedy shaping towards states the critic rates highly, plus PPO.
+
+### 4.2 Scale
+
+Because `V` is on the return scale and `A` on the TD-error scale, and because the sum is normalised per
+minibatch, at the `alpha` values that worked the normalised coefficient was dominated by `X`.  The
+measured ratios (`|X|/|A|` from 2 to 500) mean the agents were, to a first approximation, optimising the
+one-step preference of 4.1 with PPO's own advantage as a perturbation.  This is consistent with SVO-value
+agents collecting fewer coins than the control (24 vs 30 per episode): the selfish learning signal is
+attenuated.
+
+### 4.3 Level versus change, and why "imagined value" is a poor reward proxy
+
+A natural repair is to use the *change* of the other's prospects, `V_i(o_j^{t+1}) - V_i(o_j^t)`, as an
+intrinsic reward.  Potential-based reward shaping (Ng, Harada & Russell 1999) shows why this cannot change
+what is learned in the limit: for any function `Phi` of the state, adding `F = gamma Phi(s') - Phi(s)`
+to the reward leaves the optimal policy unchanged, because the discounted sum of `F` along any trajectory
+telescopes to `gamma^T Phi(s_T) - Phi(s_0)`, independent of the actions taken.  Devlin & Kudenko (2011)
+extend this to multi-agent stochastic games: potential-based shaping does not alter the set of Nash
+equilibria (Lu et al. 2011 prove the same for general-sum stochastic games), and Devlin & Kudenko (2012)
+show it also holds for potentials that change over time, which covers a `Phi = V_i` that is still being
+learned.  The "imagined reward" `V_i(o_j^t) - gamma V_i(o_j^{t+1})` is exactly such a term with
+`Phi = -V_i(o_j)`.  Its total over an episode is fixed by the initial and terminal states; no policy of
+agent `i` can increase it.
+
+Two things follow.  (i) Any *value-difference* social reward is inert with respect to equilibria and can
+only affect the learning dynamics.  (ii) Our *level* term `alpha * V_i(o_j')` is not potential-based, so
+it does change the objective, but in the uncontrolled, myopic way described in 4.1.  The value function
+is a forecast under the current joint policy; it is not a quantity whose sum over time measures how well
+the other agent actually did.
+
+### 4.4 What the control suggests (hypothesis)
+
+Why would `alpha * V_i(o_i')`, which never looks at the other agent, produce cooperation?  In the Coin
+Game the critic has reason to rate "the other agent's coin is on the board" above "my coin is on the
+board": in the first state I cannot lose 2, in the second I can.  Taking my own coin respawns the coin in
+the other colour (the safe state); taking the other's coin gives +1 now but respawns it in mine (the risky
+state); leaving the other's coin keeps the safe state.  A return-maximiser takes the other's coin because
++1 now outweighs the state difference; an agent that is greedy for next-state value (4.1, 4.2) does not.
+The observable consequence is "takes own coins, leaves the other's", i.e. cooperation, from
+self-protection.  This is a hypothesis.  It predicts (a) a probe of the trained critic shows
+`V_i(other's coin on board) > V_i(my coin on board)`, and (b) a potential-based version of the control,
+`alpha * [gamma V_i(o_i') - V_i(o_i)]`, produces no cooperation (0.50), since it cannot change the
+optimal policy.
+
+EI-value's trajectory is different from the control's (anti-social first: cooperation 0.29 and collective
+return -12.5 at 70k steps; then a monotone climb to the best value-signal result with the tightest CI).
+A consistent story is that early on `V_i` only encodes "coin near me is good", so `V_i(o_j')` rewards
+coins near `j` regardless of colour, while later the critic encodes the -2 exposure and, evaluated from
+`j`'s perspective, penalises approaching `j`'s coin.  This is the perspective-taking effect the project is
+about, and it is the part of the results that the control cannot explain.  It is also a hypothesis; the
+same critic probe over training tests it.
+
+### 4.5 Why the gap terms fail
+
+SIA and IA penalise *differences* and are indifferent between equal-good and equal-bad outcomes; in a
+symmetric game they have no directional preference (3.1).  With the value signal they inherit the
+forecast problem of 4.3 (a forecast gap is near zero in symmetric positions).  With the reward signal the
+gap of smoothed rewards is also near zero at the symmetric grabbing equilibrium, so there is no gradient
+until asymmetric episodes appear; both IA-reward and SIA-reward were still slowly rising at 2M steps.
+Hughes et al. (2018) report that disadvantageous inequity aversion works in their Harvest "via
+punishment" with a fining beam, and that advantageous inequity aversion works in Cleanup, a public-goods
+game; the Coin Game has neither a punishment action nor a public good, so a weak IA result there does not
+contradict their findings and should not be presented as such.  IA-value's success is consistent with its
+envy term containing `+alpha * V_i(o_i')`, i.e. the control's mechanism.
+
+## 5. Proposed reformulations
+
+### 5.1 Imagined reward through one's own reward model (`--signal imagined`)
+
+The project's premise is: *I cannot observe your reward, but I assume you are like me.*  The direct
+implementation of that premise is a **reward model**, not a value function.  Agent `i` learns
+`rhat = f_i(o^t, o^{t+1})` by supervised regression on its own transitions (`f_i` predicts `r_i^t` from
+`(o_i^t, o_i^{t+1})`), then imagines the other's reward as `f_i(o_j^t, o_j^{t+1})` and feeds it into the
+existing intrinsic-reward machinery (smoothing, EI/SVO/SIA/IA, unchanged).  Properties:
+
+* No reward access, as required.  No forecast and no telescoping (4.3): the imagined quantity is a per-step
+  reward, and its sum measures what `i` believes `j` received.
+* Reward scale, so `alpha` has the same meaning as in the literature's methods and their `alpha` grids
+  apply.
+* It reduces to the reward-signal methods exactly when the other agent's reward function equals `i`'s and
+  `f_i` is exact.  The gap between `imagined` and `reward` then measures the cost of the assumption
+  "the other is like me", which is the question the paper asks.
+* Assumption made explicit: rewards are transferable across agents up to a change of perspective.  This
+  is the same assumption Bussmann et al. (2019) make ("some types of reward ... may generalize across
+  agents") and it fails when agents have different reward functions; that is a limitation to state, and
+  heterogeneous-agent experiments would quantify it.
+
+In the Coin Game `f_i` is learnable exactly (+1 when I land on a coin, -2 when the other agent lands on my
+coin), so the prediction is that imagined-EI approaches EI-reward (0.996) rather than the value signal's
+0.80.  In Harvest the analogous model ("eating an apple gives +1") is equally learnable.
+
+### 5.2 Relative scaling of any social term (`--social-scale`)
+
+Standardise `X` to the advantage's scale within the batch, `Xtilde = alpha * X * std(A) / std(X)`, so that
+`alpha = 1` means "the other counts as much as my own advantage" and the grid is comparable across games
+and signals.  This keeps PPO's own signal alive and would have flagged the ratios of 4.2 immediately.  It
+does not by itself fix 4.1 or 4.3.
+
+### 5.3 Change instead of level (`--value-diff`), with its control
+
+`X_i = alpha * [V_i(o_j^{t+1}) - V_i(o_j^t)]` (for gap terms, the gap of changes).  As an advantage
+coefficient this is still the myopic construction of 4.1, but it removes the level noise and the
+frozen-board pathology (a board that never changes has zero change).  Its control is
+`alpha * [V_i(o_i^{t+1}) - V_i(o_i^t)]`, which is approximately "PPO with the immediate reward
+under-weighted".  Since the Coin Game's dilemma is exactly "+1 now versus board quality", this control may
+cooperate as well; if it does, the finding is that patience / risk aversion, not empathy, drives the
+effect.  Either outcome is informative.
+
+### 5.4 Counterfactual influence on the other's prospects (later)
+
+`X_i = alpha * [V_i(o_j^{t+1}) - b(o^t)]` with a learned baseline `b` for the expected next value of the
+other, isolating the causal effect of `i`'s action, in the spirit of the counterfactual influence reward of
+Jaques et al. (2019), who measure the effect of an agent's action on the other agents' *actions*.  More
+machinery; only worth it if 5.1-5.3 leave something unexplained.
+
+## 6. Protocol and pre-registered predictions
+
+Same protocol as before: PPO settings selected per method on tuning seeds (`coin.sh ppo`), fresh seeds for
+the reported numbers, the own-value control and plain PPO in every table, the reward-access method as the
+ceiling.  Predictions, stated before running:
+
+| experiment | if the hypotheses of 4.4 hold | if they do not |
+|---|---|---|
+| potential-based control `gamma V_i(o_i') - V_i(o_i)` | cooperation 0.50 | cooperation > 0.5 would mean the shaping argument is wrong or PPO's finite-sample dynamics matter more than the limit |
+| critic probe on EI-value checkpoints (50k, 200k, 2M) | "other adjacent to my coin" acquires a negative value between 50k and 200k | no such change: the EI-value story in 4.4 is wrong |
+| imagined-EI (5.1) | approaches EI-reward (about 1.0 cooperation) | stays near 0.8 or below: the reward model, not the signal, is the bottleneck |
+| value-diff control (5.3) | cooperates (patience effect) or not; either way it is compared with value-diff EI on the same seeds | |
+
+The comparison that decides how the paper is framed is *other-regarding term vs. own-value control at the
+same PPO settings*, not *value signal vs. plain PPO*.
+
+## 7. Open questions
+
+* Transfer to Harvest: the "leave the other's coin so I cannot be exploited" structure has no direct
+  analogue there, so the control's effect may not carry over while the other-regarding effect might, or
+  the reverse.  This is the real test of generality.
+* Heterogeneous agents: all methods here assume symmetric reward functions; the imagined-reward
+  formulation makes the assumption explicit and testable.
+* Non-stationarity: `V_i` is a forecast under a moving joint policy; none of the arguments above rely on
+  convergence of the critic, but the early-training behaviour (spikes, EI-value's anti-social phase) does.
+* Statistics: 8 seeds separate the groups in Section 3.2 but not every pair inside the value-signal
+  cluster; the differences to the control that matter should be re-tested with the reformulated methods
+  rather than with more seeds of the current one.
+
+## References
+
+* Bussmann, B., Heinerman, J., Lehman, J. (2019). Towards Empathic Deep Q-Learning. arXiv:1906.10918.
+* Devlin, S., Kudenko, D. (2011). Theoretical considerations of potential-based reward shaping for multi-agent systems. AAMAS.
+* Devlin, S., Kudenko, D. (2012). Dynamic potential-based reward shaping. AAMAS.
+* Fehr, E., Schmidt, K. M. (1999). A theory of fairness, competition, and cooperation. QJE.
+* Foerster, J. et al. (2018). Learning with Opponent-Learning Awareness. AAMAS. arXiv:1709.04326.
+* Hughes, E. et al. (2018). Inequity aversion improves cooperation in intertemporal social dilemmas. NeurIPS. arXiv:1803.08884.
+* Jaques, N. et al. (2019). Social Influence as Intrinsic Motivation for Multi-Agent Deep RL. ICML. arXiv:1810.08647.
+* Lerer, A., Peysakhovich, A. (2017). Maintaining cooperation in complex social dilemmas using deep RL. arXiv:1707.01068.
+* Littman, M. (1994). Markov games as a framework for multi-agent reinforcement learning. ICML.
+* Lu, X., Schwartz, H., Givigi, S. (2011). Policy invariance under reward transformations for general-sum stochastic games. JAIR. arXiv:1401.3907.
+* Madhushani, U. et al. (2023). Heterogeneous Social Value Orientation Leads to Meaningful Diversity in Sequential Social Dilemmas. arXiv:2305.00768.
+* McKee, K. R. et al. (2020). Social diversity and social preferences in mixed-motive reinforcement learning. AAMAS.
+* Ng, A. Y., Harada, D., Russell, S. (1999). Policy invariance under reward transformations: theory and application to reward shaping. ICML.
+* Raileanu, R., Denton, E., Szlam, A., Fergus, R. (2018). Modeling Others using Oneself in Multi-Agent RL. ICML. arXiv:1802.09640.
+* Schulman, J. et al. (2016). High-dimensional continuous control using generalized advantage estimation. ICLR.
+* Schulman, J. et al. (2017). Proximal policy optimization algorithms. arXiv:1707.06347.
+* Schwarting, W. et al. (2019). Social behavior for autonomous vehicles. PNAS 116(50).
+* Shapley, L. S. (1953). Stochastic games. PNAS.
+* Sutton, R. S., McAllester, D., Singh, S., Mansour, Y. (2000). Policy gradient methods for RL with function approximation. NeurIPS.
+* Tucker, G. et al. (2018). The Mirage of Action-Dependent Baselines in Reinforcement Learning. ICML. arXiv:1802.10031.
+* Williams, R. J. (1992). Simple statistical gradient-following algorithms for connectionist reinforcement learning. Machine Learning.
