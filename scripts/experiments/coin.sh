@@ -139,7 +139,14 @@ case "${1:-}" in
       echo "=== PPO sensitivity: $(basename "$conf" | sed "s/^${TAG}_ppo_//")"
       # shellcheck disable=SC2086
       $PY scripts/summarize_runs.py "$conf"_lr*_ent* --last "$LAST" --tags $SUMMARY_TAGS
-    done ;;
+    done
+    # ... and the ranking per method across all of them, with the stage-B command for every winner
+    PPO_DIRS=$(ls -d "$RUN_ROOT/${TAG}_ppo_"* 2>/dev/null || true)
+    if [ -n "$PPO_DIRS" ]; then
+      echo "=== best (alpha, PPO setting) per method across the PPO grid"
+      # shellcheck disable=SC2086
+      $PY scripts/best_configs.py $PPO_DIRS --last "$LAST" --top "${TOP:-5}"
+    fi ;;
   *)
     sed -n '2,30p' "$0"; exit 1 ;;
 esac

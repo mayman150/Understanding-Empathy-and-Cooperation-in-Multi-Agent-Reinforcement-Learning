@@ -51,8 +51,8 @@ empathy_marl/
   metrics.py             efficiency / equality / sustainability per episode (+ env-specific episode stats)
 scripts/sweep_pd.sh, sweep_meltingpot.sh, summarize_runs.py   (local sweeps + results table)
 scripts/make_grid.py, scripts/slurm/                          (parameter grids + Compute Canada job arrays)
-scripts/experiments/pd.sh, coin.sh                            (experiments 1 / 1b end to end: tune / final / summary)
-scripts/plot_curves.py, pd_value_probe.py                     (learning curves from TensorBoard logs; PD critic probe)
+scripts/experiments/pd.sh, coin.sh                            (experiments 1 / 1b end to end: tune / final / ppo / summary)
+scripts/plot_curves.py, best_configs.py, pd_value_probe.py    (learning curves; per-method ranking across folders; PD critic probe)
 tests/                   pytest suite (alignment, formulas, envs, end-to-end smoke tests)
 legacy/                  original scripts, kept for reference only
 ```
@@ -160,6 +160,7 @@ STEPS=2000000 TIME=01:00:00 scripts/experiments/coin.sh final --formulation none
 # stage 2b: PPO sensitivity of the same configurations (lr x entropy grid, 3 seeds each; baseline included for fairness)
 scripts/experiments/coin.sh ppo --formulation svo --signal value --alpha 30 --phi 0.523599
 scripts/experiments/coin.sh ppo --formulation none
+python scripts/best_configs.py ~/scratch/MARL/empathy_runs/coin_ppo_*     # ranking per method + the `final` line for each winner
 scripts/experiments/pd.sh tune                                            # the PD grids: 3 seeds x 300k steps (327 jobs)
 SEEDS="1 2 3 4 5" NUM_AGENTS=4 scripts/experiments/pd.sh tune             # variants via environment variables
 ```
