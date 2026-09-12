@@ -292,6 +292,28 @@ same PPO settings*, not *value signal vs. plain PPO*.
   cluster; the differences to the control that matter should be re-tested with the reformulated methods
   rather than with more seeds of the current one.
 
+## Appendix: every variant in one notation
+
+`V(o; w_i)` is agent `i`'s critic (parameters `w_i`), `o_j^{t+1}` agent `j`'s next observation, `A_i^t` agent
+`i`'s GAE advantage, `F_i(z)` one of the formulations of Section 1 applied to `z_i = (z_i1, ..., z_iN)`.  A
+social term enters either as a **coefficient** `X_i^t` (PPO uses `A_i^t + X_i^t`, normalised per minibatch;
+judged one step ahead) or as a **reward** `Y_i^t` (PPO uses `r_i^t + Y_i^t`, then GAE; carried through the
+return).
+
+```
+reward signal (Hughes et al.)   z_ij = e_j,  e_j^t = gamma*lambda*e_j^{t-1} + r_j^t          Y_i = F_i(z)   X_i = 0
+value signal (current)          z_ij = V(o_j^{t+1}; w_i)  (incl. j = i)                       X_i = F_i(z) * (1 - done^{t+1})
+own-value control (SVO phi=0)   X_i = alpha * V(o_i^{t+1}; w_i)                                never reads o_j
+5.1 imagined reward             theta_i = argmin E[(f(o_i^t,o_i^{t+1};theta_i) - r_i^t)^2]   (own transitions)
+                                rhat_j = f(o_j^t, o_j^{t+1}; theta_i),  rhat_i = r_i
+                                z_ij = ehat_j,  ehat_j^t = gamma*lambda*ehat_j^{t-1} + rhat_j^t   Y_i = F_i(z)   X_i = 0
+5.2 relative scaling            Xtilde_i = alpha * X_i * std_B(A_i) / max(std_B(X_i), eps)   (F with unit weight)
+5.3 change (not a fix)          X_i = alpha*[V(o_j^{t+1};w_i) - V(o_j^t;w_i)] = current X - alpha*V(o_j^t;w_i);
+                                the subtracted term is action-independent -> same expected update as current
+5.4 counterfactual (reward)     D_i = V(o_j^{t+1};w_i) - sum_a' pi_i(a'|o_i^t) V(o_j^{t+1}(a');w_i),   Y_i = alpha*D_i
+PPO coefficient (all)           c_i = A_i + X_i, normalised (c - mean_B c)/std_B c, with A_i from r_i + Y_i
+```
+
 ## References
 
 * Bussmann, B., Heinerman, J., Lehman, J. (2019). Towards Empathic Deep Q-Learning. arXiv:1906.10918.
