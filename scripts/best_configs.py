@@ -7,9 +7,15 @@
 Unlike summarize_runs.py this does not rely on run or folder names: every run's ``args.json`` is read, and runs
 are grouped by *all* training arguments except the seed (formulation, signal, alpha, beta, phi, learning rate,
 entropy coefficient, ...).  For every method (formulation + signal) the groups are ranked by the final value of
-``--metric`` (mean of the last K logged points per run, then mean over seeds) and the top rows are printed with
-the arguments that differ between them, followed by the ``coin.sh final`` line that reruns the winner on fresh
-seeds with exactly its PPO settings.
+``--metric`` (mean of the last K logged points per run, then over seeds; by default the lower bound mean - std,
+so that a configuration has to be good on every seed, ``--rank mean`` for the plain mean) and the top rows are
+printed with the arguments that differ between them, followed by the ``coin.sh final`` line that reruns the
+winner on fresh seeds with exactly its PPO settings.
+
+Selection protocol: every method gets the same grid (same alpha neighbourhood size, same PPO settings, same
+seeds and step budget), the metric and the ranking rule are fixed before looking at the results, and the
+selected configurations are re-run on *fresh* seeds; the numbers printed here are selection statistics (biased
+upwards by the selection itself) and are not the ones to report.
 """
 from __future__ import annotations
 
@@ -81,6 +87,8 @@ def main() -> None:
     p.add_argument("--tags", nargs="*", default=DEFAULT_TAGS, help="metrics to show (the ranking metric is added)")
     p.add_argument("--last", type=int, default=20, help="average over the last K logged points")
     p.add_argument("--top", type=int, default=5, help="rows per method")
+    p.add_argument("--rank", choices=["mean", "lcb"], default="lcb",
+                   help="rank by the seed mean, or by mean - std (lcb: prefers configurations that are good on every seed)")
     p.add_argument("--min-coop", type=float, default=None, help="only rank groups whose mean cooperation rate (player_0) exceeds this")
     p.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1))
     a = p.parse_args()
@@ -118,16 +126,21 @@ def main() -> None:
         rows = by_method[method]
         if a.min_coop is not None:
             rows = [r for r in rows if r.get("charts/cooperation_rate/player_0", (float("nan"),))[0] >= a.min_coop] or rows
-        rows.sort(key=lambda r: -r[a.metric][0])
+        def score(r: dict) -> float:
+            mean, std = r[a.metric]
+            return mean - std if a.rank == "lcb" else mean
+
+        rows.sort(key=lambda r: -score(r))
         varying = sorted(
             k for k in rows[0]["args"] if k not in IGNORED and len({json.dumps(r["args"][k]) for r in rows}) > 1
         )
-        print(f"\n=== {method}: {len(rows)} configurations, ranked by final {a.metric}  (varying: {', '.join(varying) or 'nothing'})")
+        rule = "mean - std over seeds" if a.rank == "lcb" else "mean over seeds"
+        print(f"\n=== {method}: {len(rows)} configurations, ranked by final {a.metric} ({rule})  (varying: {', '.join(varying) or 'nothing'})")
         short = {t: "/".join(t.split("/")[1:]) for t in tags}  # charts/cooperation_rate/player_0 -> cooperation_rate/player_0
-        header = [f"{k:>12s}" for k in varying] + [f"{'seeds':>5s}", f"{'steps':>7s}"] + [f"{short[t]:>28s}" for t in tags]
+        header = [f"{k:>12s}" for k in varying] + [f"{'seeds':>5s}", f"{'steps':>7s}", f"{'score':>7s}"] + [f"{short[t]:>28s}" for t in tags]
         print(" ".join(header))
         for r in rows[: a.top]:
-            cells = [f"{fmt(r['args'][k]):>12s}" for k in varying] + [f"{r['n']:>5d}", f"{r['steps']/1e6:6.2f}M"]
+            cells = [f"{fmt(r['args'][k]):>12s}" for k in varying] + [f"{r['n']:>5d}", f"{r['steps']/1e6:6.2f}M", f"{score(r):7.2f}"]
             cells += [f"{r[t][0]:14.3f} +/- {r[t][1]:<9.3f}" for t in tags]
             print(" ".join(cells))
         winners.append((method, rows[0]))
