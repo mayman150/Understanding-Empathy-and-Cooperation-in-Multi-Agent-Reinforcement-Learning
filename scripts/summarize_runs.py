@@ -13,6 +13,7 @@ import glob
 import os
 import re
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
@@ -46,15 +47,18 @@ def main() -> None:
     p.add_argument("--tags", nargs="*", default=DEFAULT_TAGS)
     p.add_argument("--last", type=int, default=20, help="average over the last K logged points")
     p.add_argument("--csv", default=None)
+    p.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1), help="parallel workers for reading event files")
     a = p.parse_args()
 
+    run_dirs = [
+        d for d in sorted(glob.glob(os.path.join(a.root, "*")))
+        if RUN_RE.match(os.path.basename(d)) and glob.glob(os.path.join(d, "events.out.tfevents.*"))
+    ]
+    with ProcessPoolExecutor(max_workers=max(1, a.jobs)) as pool:
+        loaded = list(pool.map(load_run, run_dirs, [a.tags] * len(run_dirs), [a.last] * len(run_dirs)))
     groups: dict[tuple, list[dict]] = defaultdict(list)
-    for run_dir in sorted(glob.glob(os.path.join(a.root, "*"))):
-        name = os.path.basename(run_dir)
-        m = RUN_RE.match(name)
-        if not m or not glob.glob(os.path.join(run_dir, "events.out.tfevents.*")):
-            continue
-        metrics = load_run(run_dir, a.tags, a.last)
+    for run_dir, metrics in zip(run_dirs, loaded):
+        m = RUN_RE.match(os.path.basename(run_dir))
         if metrics:
             key = (m["env"], m["method"], m["policy"], m["params"])
             metrics["seed"] = int(m["seed"])

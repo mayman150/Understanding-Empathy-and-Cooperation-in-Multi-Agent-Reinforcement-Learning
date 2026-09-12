@@ -60,7 +60,7 @@ TAG=${TAG:-coin}   # names of the grid files / result folders
 VALUE_GRID="grids/${TAG}_value.txt"
 REWARD_GRID="grids/${TAG}_reward.txt"
 SUMMARY_TAGS="charts/collective_return charts/equality charts/cooperation_rate/player_0 charts/cooperation_rate/player_1"
-LAST=${LAST:-160}   # summary: mean of the last K logged episodes (8 env copies finish together -> 160 = 20 batches = 8k steps)
+LAST=${LAST:-20}   # summary: mean of the last K logged points; episode metrics are logged once per batch of 8 finished episodes (20 = 8k steps)
 
 make_grids() {
   mkdir -p grids

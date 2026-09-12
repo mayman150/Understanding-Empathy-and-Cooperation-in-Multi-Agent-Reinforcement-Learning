@@ -22,6 +22,7 @@ import glob
 import os
 import re
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
@@ -91,12 +92,12 @@ def main() -> None:
     p.add_argument("--bins", type=int, default=200, help="number of step bins per curve")
     p.add_argument("--methods", nargs="*", default=None, help="only these methods (e.g. sia_value none)")
     p.add_argument("--no-plots", action="store_true", help="only write curves.csv")
+    p.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1), help="parallel workers for reading event files")
     a = p.parse_args()
     os.makedirs(a.out, exist_ok=True)
 
     # ---- load -------------------------------------------------------------------------------
-    runs: dict[tuple, dict[int, dict]] = defaultdict(dict)  # (env, method, params) -> seed -> {tag: (steps, values)}
-    max_step = 0.0
+    run_dirs = []
     for root in a.roots:
         for run_dir in sorted(glob.glob(os.path.join(os.path.expanduser(root), "*"))):
             m = RUN_RE.match(os.path.basename(run_dir))
@@ -104,11 +105,17 @@ def main() -> None:
                 continue
             if a.methods and m["method"] not in a.methods:
                 continue
-            data = load_scalars(run_dir, a.tags)
-            if not data:
-                continue
-            runs[(m["env"], m["method"], m["params"])][int(m["seed"])] = data
-            max_step = max(max_step, max(s[-1] for s, _ in data.values()))
+            run_dirs.append(run_dir)
+    with ProcessPoolExecutor(max_workers=max(1, a.jobs)) as pool:
+        loaded = list(pool.map(load_scalars, run_dirs, [a.tags] * len(run_dirs)))
+    runs: dict[tuple, dict[int, dict]] = defaultdict(dict)  # (env, method, params) -> seed -> {tag: (steps, values)}
+    max_step = 0.0
+    for run_dir, data in zip(run_dirs, loaded):
+        if not data:
+            continue
+        m = RUN_RE.match(os.path.basename(run_dir))
+        runs[(m["env"], m["method"], m["params"])][int(m["seed"])] = data
+        max_step = max(max_step, max(s[-1] for s, _ in data.values()))
     if not runs:
         raise SystemExit("no runs found")
     edges = np.linspace(0.0, max_step, a.bins + 1)

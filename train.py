@@ -259,29 +259,40 @@ if __name__ == "__main__":
             next_done = torch.maximum(term_t, trunc_t)
             next_obs = to_obs_tensor(bundle.extract_obs(raw_obs))
 
-            for e in range(E):
-                info = infos[e * N]
-                if "ma_episode" not in info:
-                    continue
-                ep = info["ma_episode"]
-                episodes_done += 1
+            # Episode statistics.  Env copies run in lockstep (fixed episode length), so all E of them usually
+            # finish on the same step; log the mean over the finished copies once per step rather than E points
+            # with the same global_step (identical curves after binning, E times fewer events to parse).
+            finished = [infos[e * N]["ma_episode"] for e in range(E) if "ma_episode" in infos[e * N]]
+            if finished:
+                episodes_done += len(finished)
+                r_mean = np.mean([ep["r"] for ep in finished], axis=0)
+                scalars = {
+                    key: float(np.mean([ep[src] for ep in finished]))
+                    for key, src in (
+                        ("collective_return", "collective"),
+                        ("efficiency", "efficiency"),
+                        ("equality", "equality"),
+                        ("sustainability", "sustainability"),
+                        ("episode_length", "l"),
+                    )
+                }
                 print(
-                    f"global_step={global_step}, episode={episodes_done}, collective_return={ep['collective']:.2f}, "
-                    f"per_agent={np.round(ep['r'], 2).tolist()}, equality={ep['equality']:.3f}, "
-                    f"sustainability={ep['sustainability']:.1f}"
+                    f"global_step={global_step}, episodes={episodes_done}, collective_return={scalars['collective_return']:.2f}, "
+                    f"per_agent={np.round(r_mean, 2).tolist()}, equality={scalars['equality']:.3f}, "
+                    f"sustainability={scalars['sustainability']:.1f} (mean of {len(finished)} episodes)"
                 )
-                writer.add_scalar("charts/collective_return", ep["collective"], global_step)
-                writer.add_scalar("charts/efficiency", ep["efficiency"], global_step)
-                writer.add_scalar("charts/equality", ep["equality"], global_step)
-                writer.add_scalar("charts/sustainability", ep["sustainability"], global_step)
-                writer.add_scalar("charts/episode_length", ep["l"], global_step)
+                for key, value in scalars.items():
+                    writer.add_scalar(f"charts/{key}", value, global_step)
                 for i, name in enumerate(bundle.agent_names):
-                    writer.add_scalar(f"charts/episodic_return/{name}", ep["r"][i], global_step)
-                # environment-specific per-episode statistics (e.g. Coin Game: charts/cooperation_rate/<agent>)
-                for key, per_agent in ep.get("stats", {}).items():
+                    writer.add_scalar(f"charts/episodic_return/{name}", r_mean[i], global_step)
+                # environment-specific per-episode statistics (e.g. Coin Game: charts/cooperation_rate/<agent>);
+                # nan = "undefined for this agent in this episode" and is left out of the mean
+                for key in sorted({k for ep in finished for k in ep.get("stats", {})}):
+                    vals = np.array([ep["stats"][key] for ep in finished if key in ep.get("stats", {})])  # (n, N)
+                    defined = ~np.isnan(vals)
                     for i, name in enumerate(bundle.agent_names):
-                        if not np.isnan(per_agent[i]):
-                            writer.add_scalar(f"charts/{key}/{name}", per_agent[i], global_step)
+                        if defined[:, i].any():
+                            writer.add_scalar(f"charts/{key}/{name}", vals[defined[:, i], i].mean(), global_step)
 
         # bootstrap value if not done ---------------------------------------------------------
         with torch.no_grad():
