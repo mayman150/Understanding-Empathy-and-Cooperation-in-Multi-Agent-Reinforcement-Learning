@@ -153,18 +153,33 @@ baseline) and differ only in the signal: `grids/<tag>_value.txt` (our idea) and
 ```bash
 scripts/experiments/coin.sh tune                                          # stage 1: 3 seeds x 1M steps, both grids (408 jobs)
 scripts/experiments/coin.sh summary                                       # tables + CSVs once the arrays finish
-scripts/experiments/coin.sh final --formulation ei --signal value  --alpha 3             # stage 2: best of each signal,
-scripts/experiments/coin.sh final --formulation ia --signal reward --alpha 0.1 --beta 0.05  #          8 fresh seeds (4..11)
+# stage 2: winners on 8 fresh seeds (4..11) at the PPO defaults, 2M steps
+STEPS=2000000 TIME=01:00:00 scripts/experiments/coin.sh final --formulation svo --signal value --alpha 30 --phi 0.523599
+STEPS=2000000 TIME=01:00:00 scripts/experiments/coin.sh final --formulation svo --signal value --alpha 30 --phi 0   # own-value-only control
+STEPS=2000000 TIME=01:00:00 scripts/experiments/coin.sh final --formulation none
+# stage 2b: PPO sensitivity of the same configurations (lr x entropy grid, 3 seeds each; baseline included for fairness)
+scripts/experiments/coin.sh ppo --formulation svo --signal value --alpha 30 --phi 0.523599
+scripts/experiments/coin.sh ppo --formulation none
 scripts/experiments/pd.sh tune                                            # the PD grids: 3 seeds x 300k steps (327 jobs)
 SEEDS="1 2 3 4 5" NUM_AGENTS=4 scripts/experiments/pd.sh tune             # variants via environment variables
-TAG=coin_ent0.05 TRAIN_ARGS="--num-envs 8 --num-steps 128 --num-minibatches 4 --ent-coef 0.05" \
-    scripts/experiments/coin.sh tune                                      # PPO sensitivity check under its own tag
 ```
 
 The LaTeX parameter tables for both grids are written next to the grid files.  Read
 `charts/cooperation_rate/player_i` (Coin Game: 0.5 = grabs everything, 1.0 = only its own colour),
 `charts/collective_return` (about 0 when both grab everything, +1 per coin under cooperation)
-and `charts/equality` together.
+and `charts/equality` together.  Protocol: PPO is held at the CleanRL defaults for the whole
+stage-1 grid so that differences are attributable to the social term; the headline numbers are the
+fresh-seed stage-2 runs at those defaults; stage 2b reports whether the ranking survives other
+learning rates and entropy coefficients (`summary` prints one PPO table per configuration).
+
+Stage-1 result on the Coin Game (3 seeds, 1M steps, final collective return; 0 = both grab
+everything, ~22 = full cooperation): plain PPO 0.0; with access to the other agent's reward,
+EI α = 0.1 reaches 21.8 (cooperation 0.997); without it, the value signal reaches 16.4 with IA
+(α = 100, β = 10; 15.8 at α = 10, β = 1) and 13.6 with SVO (α = 10, φ = π/6).  Only value terms
+that keep the agent's own value in the expression work: pure other-perspective value (EI-value,
+SVO-value with φ ≥ π/3) collapses at large α into agents that stop taking coins, and SIA-value is
+transient.  In those runs the social term dominates the advantage (|X|/|A| from 2 to 500), hence
+the φ = 0 control above.
 
 ### Hyper-parameter grids on Compute Canada (SLURM)
 

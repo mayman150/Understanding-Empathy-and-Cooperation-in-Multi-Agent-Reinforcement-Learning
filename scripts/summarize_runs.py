@@ -2,9 +2,11 @@
 
     python scripts/summarize_runs.py runs/ --tags charts/collective_return charts/cooperation_rate/player_0 --last 20
     python scripts/summarize_runs.py runs/ --csv results.csv
+    python scripts/summarize_runs.py results/coin_ppo_*_lr*_ent*        # several folders -> extra 'runs' column
 
 Groups runs by (env, method = formulation_signal, policy, params) and reports mean +/- std across seeds,
-which is what the report's plots and tables need.
+which is what the report's plots and tables need.  With several result folders (e.g. the same configuration
+under different PPO settings, one folder each) the rows are additionally labelled by folder name.
 """
 from __future__ import annotations
 
@@ -41,32 +43,43 @@ def load_run(run_dir: str, tags: list[str], last: int) -> dict[str, float]:
     return out
 
 
+def root_labels(roots: list[str]) -> dict[str, str]:
+    """Short label per result folder: the folder name minus the prefix shared by all of them (e.g. 'lr1e-3_ent0.05')."""
+    names = {r: os.path.basename(os.path.normpath(r)) for r in roots}
+    prefix = os.path.commonprefix(list(names.values())) if len(roots) > 1 else ""
+    prefix = prefix[: prefix.rfind("_") + 1] if "_" in prefix else ""  # cut at a separator, not mid-token
+    return {r: (n[len(prefix):] or n) for r, n in names.items()}
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("root")
+    p.add_argument("roots", nargs="+", metavar="root", help="result folder(s); with several, a 'runs' column tells them apart")
     p.add_argument("--tags", nargs="*", default=DEFAULT_TAGS)
     p.add_argument("--last", type=int, default=20, help="average over the last K logged points")
     p.add_argument("--csv", default=None)
     p.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1), help="parallel workers for reading event files")
     a = p.parse_args()
 
-    run_dirs = [
-        d for d in sorted(glob.glob(os.path.join(a.root, "*")))
-        if RUN_RE.match(os.path.basename(d)) and glob.glob(os.path.join(d, "events.out.tfevents.*"))
-    ]
+    labels = root_labels(a.roots)
+    run_dirs, run_roots = [], []
+    for root in a.roots:
+        for d in sorted(glob.glob(os.path.join(root, "*"))):
+            if RUN_RE.match(os.path.basename(d)) and glob.glob(os.path.join(d, "events.out.tfevents.*")):
+                run_dirs.append(d)
+                run_roots.append(root)
     with ProcessPoolExecutor(max_workers=max(1, a.jobs)) as pool:
         loaded = list(pool.map(load_run, run_dirs, [a.tags] * len(run_dirs), [a.last] * len(run_dirs)))
     groups: dict[tuple, list[dict]] = defaultdict(list)
-    for run_dir, metrics in zip(run_dirs, loaded):
+    for run_dir, root, metrics in zip(run_dirs, run_roots, loaded):
         m = RUN_RE.match(os.path.basename(run_dir))
         if metrics:
-            key = (m["env"], m["method"], m["policy"], m["params"])
+            key = (labels[root], m["env"], m["method"], m["policy"], m["params"])
             metrics["seed"] = int(m["seed"])
             groups[key].append(metrics)
 
     rows = []
     for key, runs in sorted(groups.items()):
-        row = {"env": key[0], "method": key[1], "policy": key[2], "params": key[3], "seeds": len(runs)}
+        row = {"runs": key[0], "env": key[1], "method": key[2], "policy": key[3], "params": key[4], "seeds": len(runs)}
         for tag in a.tags:
             vals = [r[tag] for r in runs if tag in r]
             if vals:
@@ -76,7 +89,8 @@ def main() -> None:
     if not rows:
         print("no runs found")
         return
-    cols = ["env", "method", "policy", "params", "seeds"] + [t for t in a.tags if any(t in r for r in rows)]
+    cols = (["runs"] if len(a.roots) > 1 else []) + ["env", "method", "policy", "params", "seeds"]
+    cols += [t for t in a.tags if any(t in r for r in rows)]
     widths = {c: max(len(c), *(len(str(r.get(c, ""))) for r in rows)) for c in cols}
     print(" | ".join(c.ljust(widths[c]) for c in cols))
     print("-+-".join("-" * widths[c] for c in cols))

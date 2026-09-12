@@ -14,9 +14,20 @@
 #   scripts/experiments/coin.sh tune       # write the grids and submit both job arrays
 #   scripts/experiments/coin.sh summary    # mean +/- std over seeds per configuration, both grids (+ CSV)
 #
-# Stage 2 (best configuration of each signal, 8 fresh seeds 4..11):
-#   scripts/experiments/coin.sh final --formulation ei  --signal value  --alpha 3
-#   scripts/experiments/coin.sh final --formulation ia  --signal reward --alpha 0.1 --beta 0.05
+# Stage 2 (winners of stage 1 on 8 fresh seeds 4..11, PPO defaults; use 2M steps, the value signal was still
+# improving at 1M):
+#   STEPS=2000000 TIME=01:00:00 scripts/experiments/coin.sh final --formulation svo --signal value --alpha 30 --phi 0.523599
+#   STEPS=2000000 TIME=01:00:00 scripts/experiments/coin.sh final --formulation svo --signal value --alpha 30 --phi 0   # own-value-only control
+#   STEPS=2000000 TIME=01:00:00 scripts/experiments/coin.sh final --formulation ia  --signal value --alpha 10 --beta 1
+#   STEPS=2000000 TIME=01:00:00 scripts/experiments/coin.sh final --formulation ei  --signal reward --alpha 0.1        # reference with reward access
+#   STEPS=2000000 TIME=01:00:00 scripts/experiments/coin.sh final --formulation none                                   # plain PPO
+#
+# Stage 2b (PPO sensitivity of the same configurations: PPO_LRS x PPO_ENTS, PPO_SEEDS each; the baseline and the
+# reward-signal reference get the same grid so the comparison stays fair):
+#   scripts/experiments/coin.sh ppo --formulation svo --signal value --alpha 30 --phi 0.523599
+#   scripts/experiments/coin.sh ppo --formulation none
+#   PPO_LRS="1e-4 1e-3" PPO_ENTS="0.01 0.05 0.1" scripts/experiments/coin.sh ppo --formulation ia --signal value --alpha 10 --beta 1
+#   scripts/experiments/coin.sh summary    # also prints the final table and one PPO table per configuration
 #
 # Alpha grids (from local 1M-step probes, seed 1).  Value signal: the two families need different scales.  Gap
 # terms (SIA, IA) see |V_i(o_i) - V_i(o_j)| ~ 0.8-1 against an advantage of ~1, and SIA only moved behaviour at
@@ -54,6 +65,9 @@ FORMULATIONS=${FORMULATIONS:-"ei sia svo ia"}   # social-term formulations to tu
 VALUE_ALPHAS=${VALUE_ALPHAS:-"0 0.03 0.1 0.3 1 3 10 30 100"}
 REWARD_ALPHAS=${REWARD_ALPHAS:-"0 0.003 0.01 0.03 0.1 0.3 1 3"}
 TRAIN_ARGS=${TRAIN_ARGS:-"--num-envs 8 --num-steps 128 --num-minibatches 4"}
+PPO_LRS=${PPO_LRS:-"1e-4 2.5e-4 1e-3"}   # `ppo` subcommand: learning rates x entropy coefficients x PPO_SEEDS
+PPO_ENTS=${PPO_ENTS:-"0.01 0.05"}
+PPO_SEEDS=${PPO_SEEDS:-"4-6"}
 
 COIN_ARGS="--env-id coin --max-cycles $MAX_CYCLES --total-timesteps $STEPS"
 TAG=${TAG:-coin}   # names of the grid files / result folders
@@ -91,13 +105,40 @@ case "${1:-}" in
       --time="$TIME" --array="$FINAL_SEEDS" scripts/slurm/run_seeds.sh $COIN_ARGS $TRAIN_ARGS "$@"
     { set +x; } 2>/dev/null
     echo "runs -> $RUN_ROOT/$NAME" ;;
+  ppo)
+    # PPO sensitivity of ONE configuration: one job array per (learning rate, entropy coefficient), PPO_SEEDS each.
+    # Result folders: $RUN_ROOT/${TAG}_ppo_<configuration>_lr<lr>_ent<ent>; `summary` puts them in one table.
+    shift
+    [ $# -gt 0 ] || { echo "usage: $0 ppo <train.py args of one configuration, e.g. --formulation svo --signal value --alpha 30 --phi 0.523599>"; exit 1; }
+    CONF="$(echo "$*" | sed -e 's/--//g' -e 's/[ ,]/_/g')"
+    mkdir -p slurm_logs
+    for lr in $PPO_LRS; do
+      for ent in $PPO_ENTS; do
+        NAME="${TAG}_ppo_${CONF}_lr${lr}_ent${ent}"
+        set -x
+        sbatch --account="$SLURM_ACCOUNT" --mail-user="$MAIL_USER" --mail-type="$MAIL_TYPE" --job-name="$NAME" \
+          --time="$TIME" --array="$PPO_SEEDS" scripts/slurm/run_seeds.sh $COIN_ARGS $TRAIN_ARGS \
+          --learning-rate "$lr" --ent-coef "$ent" "$@"
+        { set +x; } 2>/dev/null
+      done
+    done
+    echo "runs -> $RUN_ROOT/${TAG}_ppo_${CONF}_lr*_ent*" ;;
   summary)
     for g in value reward; do
       echo "=== $g signal ($RUN_ROOT/${TAG}_$g)"
       $PY scripts/summarize_runs.py "$RUN_ROOT/${TAG}_$g" --last "$LAST" --csv "${TAG}_${g}.csv" --tags $SUMMARY_TAGS
     done
-    ls -d "$RUN_ROOT/${TAG}_final_"* 2>/dev/null | while read -r d; do
-      echo "=== $(basename "$d")"; $PY scripts/summarize_runs.py "$d" --last "$LAST" --tags $SUMMARY_TAGS
+    FINAL_DIRS=$(ls -d "$RUN_ROOT/${TAG}_final_"* 2>/dev/null || true)
+    if [ -n "$FINAL_DIRS" ]; then
+      echo "=== final (fresh seeds), one row per configuration"
+      # shellcheck disable=SC2086
+      $PY scripts/summarize_runs.py $FINAL_DIRS --last "$LAST" --csv "${TAG}_final.csv" --tags $SUMMARY_TAGS
+    fi
+    # PPO sensitivity: one table per configuration, rows = (lr, ent) settings
+    ls -d "$RUN_ROOT/${TAG}_ppo_"*_lr*_ent* 2>/dev/null | sed -E 's/_lr[^_]+_ent[^_]+$//' | sort -u | while read -r conf; do
+      echo "=== PPO sensitivity: $(basename "$conf" | sed "s/^${TAG}_ppo_//")"
+      # shellcheck disable=SC2086
+      $PY scripts/summarize_runs.py "$conf"_lr*_ent* --last "$LAST" --tags $SUMMARY_TAGS
     done ;;
   *)
     sed -n '2,30p' "$0"; exit 1 ;;
