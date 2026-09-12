@@ -10,3 +10,5 @@ videos/
 wandb/
 models/
 *.pt
+grids/
+slurm_logs/

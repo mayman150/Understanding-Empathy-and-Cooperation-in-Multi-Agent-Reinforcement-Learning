@@ -48,7 +48,8 @@ empathy_marl/
   agents.py              CNN / MLP trunk, optional LSTM (ppo_atari_lstm.py), one network per agent
   empathy.py             social term F_i (ei, svo, sia, ia) for the value signal (X_i) and the reward signal (intrinsic reward)
   metrics.py             efficiency / equality / sustainability per episode
-scripts/sweep_pd.sh, sweep_meltingpot.sh, summarize_runs.py
+scripts/sweep_pd.sh, sweep_meltingpot.sh, summarize_runs.py   (local sweeps + results table)
+scripts/make_grid.py, scripts/slurm/                          (parameter grids + Compute Canada job arrays)
 tests/                   pytest suite (alignment, formulas, envs, end-to-end smoke tests)
 legacy/                  original scripts, kept for reference only
 ```
@@ -116,6 +117,37 @@ competes with the reward (order 1).  Note also that `sia`/`ia` on the value sign
 identically zero whenever two agents are in the *same* observed situation (e.g. both defect
 in a symmetric 2-player PD), so they cannot move a population away from an equitable
 all-defect equilibrium; `ei`/`svo` can.
+
+### Hyper-parameter grids on Compute Canada (SLURM)
+
+`scripts/make_grid.py` writes one `train.py` argument line per job; by default it reproduces
+the report's parameter table (EI/SIA/SVO/IA, alpha in {0, 0.003, 0.01, 0.03, 0.1, 0.3},
+phi in {pi/2, pi/3, pi/4, pi/6}, beta in {alpha/2, alpha/3, alpha/10}; alpha = 0 becomes one
+plain-PPO baseline per seed), crossed with `--signals` and `--seeds`.  `scripts/slurm/`
+runs a grid file as a job array (task N = line N):
+
+```bash
+# once, on a login node (compute nodes have no internet): build the virtualenv
+VENV=~/envs/empathy scripts/slurm/setup_env.sh              # add WITH_MELTINGPOT=1 for Melting Pot
+
+# the report's table on the 2-player PD, value + reward signal, 5 seeds  -> 455 jobs
+python scripts/make_grid.py --env-id pd --seeds 1 2 3 4 5 -o grids/pd_report.txt
+# wider alpha range for the value signal (it competes with the advantage scale)
+python scripts/make_grid.py --env-id pd --signals value --alphas 0 0.1 1 3 10 30 100 --seeds 1 2 3 4 5 -o grids/pd_wide.txt
+# selfish player_0 vs. empathetic player_1
+python scripts/make_grid.py --env-id pd --mixed "0,{a}" --alphas 0 1 10 30 --seeds 1 2 3 4 5 -o grids/pd_mixed.txt
+
+export SLURM_ACCOUNT=def-XXXX
+scripts/slurm/submit.sh grids/pd_report.txt 50                 # <= 50 concurrent CPU jobs, ~5 min each
+scripts/slurm/submit.sh grids/harvest.txt 8 --gres=gpu:1 --cpus-per-task=4 --mem=16G --time=12:00:00
+
+python scripts/summarize_runs.py $SCRATCH/empathy_runs/pd_report --csv pd_report.csv
+python scripts/make_grid.py --seeds 1 2 3 4 5 --latex          # the table for the paper
+```
+
+Runs land in `$SCRATCH/empathy_runs/<grid name>/` (override with `RUN_DIR`), SLURM logs in
+`slurm_logs/`.  `run_grid.sh` can be dry-run locally:
+`SLURM_ARRAY_TASK_ID=3 VENV=.venv scripts/slurm/run_grid.sh grids/pd_report.txt`.
 
 ### Evaluate
 
