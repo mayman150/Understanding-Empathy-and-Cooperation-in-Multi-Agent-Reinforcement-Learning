@@ -14,4 +14,5 @@ shimmy[meltingpot]==1.3.0
 # Optional
 pytest==8.3.4        # tests
 imageio==2.36.1      # evaluate.py --video
+matplotlib>=3.7      # scripts/plot_curves.py
 # wandb              # --track

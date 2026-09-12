@@ -167,6 +167,7 @@ mkdir -p slurm_logs
 sbatch --array=1-10 --job-name=pd_ei_best scripts/slurm/run_seeds.sh --env-id pd --formulation ei --signal value --alpha 20
 
 python scripts/summarize_runs.py ~/scratch/MARL/empathy_runs/pd_report --csv pd_report.csv
+python scripts/plot_curves.py ~/scratch/MARL/empathy_runs/pd_n2_value ~/scratch/MARL/empathy_runs/pd_n2_reward -o curves_pd_n2   # PNG curves + curves.csv
 python scripts/make_grid.py --seeds 1 2 3 4 5 --latex          # the table for the paper
 ```
 

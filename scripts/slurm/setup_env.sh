@@ -29,7 +29,7 @@ pip install --no-index --upgrade pip
 pip install --no-index torch numpy tensorboard || pip install torch numpy tensorboard==2.18.0
 
 # from PyPI
-pip install gymnasium==0.29.1 pettingzoo==1.24.3 supersuit==3.9.3 tyro==0.9.2 pytest==8.3.4 imageio==2.36.1
+pip install gymnasium==0.29.1 pettingzoo==1.24.3 supersuit==3.9.3 tyro==0.9.2 pytest==8.3.4 imageio==2.36.1 matplotlib
 if [ "$WITH_MELTINGPOT" = "1" ]; then
   pip install "shimmy[meltingpot]==1.3.0"
 fi
