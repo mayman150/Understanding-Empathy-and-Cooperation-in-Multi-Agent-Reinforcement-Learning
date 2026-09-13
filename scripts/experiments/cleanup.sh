@@ -40,6 +40,7 @@
 #       IA rows unless IA_PAIRS="" IA_VALUE_PAIRS=""):
 #         GROUPS=ei scripts/experiments/cleanup.sh tune                          # EI only: 17 configurations x 3 seeds = 51 jobs
 #         GROUPS=ia TAG=cleanup_ia scripts/experiments/cleanup.sh tune           # IA / SIA only (own folder): 26 x 3 = 78 jobs
+#         GROUPS=svo TAG=cleanup_svo scripts/experiments/cleanup.sh tune         # SVO only: alpha x angle in every path, 17 x 3 = 51 jobs
 #         scripts/experiments/cleanup.sh tune                                    # EI + IA: 42 configurations x 3 seeds = 126 jobs
 #         LEVEL_VALUE=1 scripts/experiments/cleanup.sh tune                      # + the shaped rows on the "trace + value" level
 #       IA can also join the PPO stage as an extra anchor (same folders as the running one):
@@ -106,7 +107,10 @@ IA_VALUE_PAIRS=${IA_VALUE_PAIRS-"1:0.1 2:0.2"}
 # LEVEL_VALUE=1 adds the `shaped + value level` rows (--imagined-level trace_value: the formulation is applied to the
 # smoothed imagined rewards PLUS my critic's forecast for the other, "what you earned lately + what you are about to earn")
 LEVEL_VALUE=${LEVEL_VALUE:-0}
-GROUPS=${GROUPS:-"ei ia"}   # which method groups the A2 grid contains (plain PPO is always in): "ei", "ia" or both
+GROUPS=${GROUPS:-"ei ia"}   # which method groups the A2 grid contains (plain PPO is always in): any of "ei", "ia", "svo"
+SVO_ALPHAS=${SVO_ALPHAS:-"1 2 3"}        # svo group: --imagined-critic other / value, crossed with the angles below
+SVO_PHIS=${SVO_PHIS:-"pi/4 pi/3"}        # pi/2 is EI, 0 is the own-value control (already in the ei group)
+SVO_SHAPED_ALPHAS=${SVO_SHAPED_ALPHAS:-"0.1"}
 TAG=${TAG:-cleanup}
 LAST=${LAST:-20}
 SUMMARY_TAGS="charts/collective_return charts/equality charts/waste_density/player_0 charts/apple_prob/player_0 charts/clean_actions/player_0 charts/clean_actions/player_1 charts/clean_actions/player_2"
@@ -135,9 +139,10 @@ make_grids() {
     local g="grids/${TAG}_$([ -n "$only_baseline" ] && echo baseline || echo stageA)${sfx}.txt"
     : > "$g"
     local mg="$PY scripts/make_grid.py $COMMON --seeds $SEEDS"
-    local want_ei=0 want_ia=0
+    local want_ei=0 want_ia=0 want_svo=0
     [[ " $GROUPS " == *" ei "* ]] && want_ei=1
     [[ " $GROUPS " == *" ia "* ]] && [ -n "$IA_PAIRS" ] && want_ia=1
+    [[ " $GROUPS " == *" svo "* ]] && want_svo=1
     # plain PPO
     $mg --signals value --alphas 0 --formulations none --extra "$extra" >> "$g"
     # references with access to the true rewards
@@ -152,6 +157,13 @@ make_grids() {
       # the paper's value term (scaled) and its own-value control
       $mg --signals value --alphas $VALUE_ALPHAS --formulations ei --extra "$extra --social-scale" >> "$g"
       $mg --signals value --alphas $CONTROL_ALPHAS --formulations svo --phis 0 --extra "$extra --social-scale" >> "$g"
+    fi
+    if [ -z "$only_baseline" ] && [ $want_svo = 1 ]; then
+      # SVO: the same linear family as EI with the weight split by the angle; tuned over alpha x phi in every path
+      $mg --signals imagined --alphas $SVO_ALPHAS --formulations svo --phis $SVO_PHIS --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
+      $mg --signals value --alphas $SVO_ALPHAS --formulations svo --phis $SVO_PHIS --extra "$extra --social-scale" >> "$g"
+      $mg --signals imagined --alphas $SVO_SHAPED_ALPHAS --formulations svo --phis $SVO_PHIS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped" >> "$g"
+      $mg --signals reward --alphas $SVO_SHAPED_ALPHAS --formulations svo --phis $SVO_PHIS --extra "$extra" >> "$g"
     fi
     if [ -z "$only_baseline" ] && [ $want_ia = 1 ]; then
       # IA / SIA through the advantage construction (inequity-dependent weights on the imagined advantages, my critic as
