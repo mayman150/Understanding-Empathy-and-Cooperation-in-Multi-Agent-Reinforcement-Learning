@@ -171,11 +171,25 @@ a baseline, and the update is identical to the level version in expectation.
 
 EI-value's trajectory is different from the control's (anti-social first: cooperation 0.29 and collective
 return -12.5 at 70k steps; then a monotone climb to the best value-signal result with the tightest CI).
-A consistent story is that early on `V_i` only encodes "coin near me is good", so `V_i(o_j')` rewards
-coins near `j` regardless of colour, while later the critic encodes the -2 exposure and, evaluated from
-`j`'s perspective, penalises approaching `j`'s coin.  This is the perspective-taking effect the project is
-about, and it is the part of the results that the control cannot explain.  It is also a hypothesis; the
-same critic probe over training tests it.
+Scoring boards from Blue's seat with Red's critic makes the mechanism concrete.  Let "threat" = Blue's
+coin on the board with Red adjacent (about to lose 2, score low), "safe" = a Red-colour coin on the board
+(Blue cannot lose, score high), "own coin, Red far" = Blue's coin with Red away (score high).  At the
+moment Red decides whether to steal, stealing turns "threat" into "safe": the -2 is a reward event that the
+next observation does not show, while the respawned coin is Red's colour and therefore safe for Blue.  So
+the level term `alpha * V_i(o_j')` *rewards the steal*: the harm vanishes from the forecast the instant it
+is realised.  The term can only produce cooperation indirectly, through the approach step: moving next to
+Blue's coin turns "own coin, Red far" into "threat", which is penalised, so a Red that never approaches
+never faces the steal decision.  This suggests the two phases: early, the critic knows the coarse fact "my
+coin on the board is risky" before the fine one "only when the other agent is adjacent"; read from Blue's
+seat the coarse fact rewards removing any Blue coin, i.e. stealing (anti-social phase); once the
+adjacency-specific fact is learned the approach penalty dominates and cooperation emerges through
+avoidance.  The avoidance part is the perspective-taking effect the project is about (Red applies what it
+knows about being threatened to Blue), and it is what the control cannot produce.  All of this is a
+hypothesis; the critic probe over training (Section 6) distinguishes the phases: at 70k Blue-colour coins
+should score low from Blue's seat regardless of Red's position, by 200k the adjacency term should dominate.
+Note that every prospect-based variant (level, scaled, change, counterfactual) shares the "harm vanishes
+from the forecast" defect, because all of them score the next board; only outcome-based terms (reward
+signal, imagined reward) penalise the steal itself.
 
 ### 4.5 Why the gap terms fail
 
@@ -259,8 +273,13 @@ my other actions would have produced.  Two ways to use it, with very different s
   outlook by the other.  This is in the spirit of the counterfactual influence reward of Jaques et al.
   (2019), who reward the effect of an agent's action on the other agents' *actions*.
 
-More machinery (a counterfactual expectation over my actions each step); only worth it if 5.1 and 5.2 leave
-something unexplained, and then only in the reward form.
+However, the reward form still scores the other's *next board*, so it inherits the defect of 4.4: in the
+Coin Game, stealing turns Blue's "threat" board into a "safe" board and `D_i` is *positive* for the steal
+(the realised -2 is invisible to a forecast).  A counterfactual on prospects therefore rewards realising
+threats just as the level term does.  The counterfactual idea is sound only when applied to an
+outcome-based quantity, e.g. imagined rewards (5.1): `rhat_j^t - E_{a'}[rhat_j^t | s^t, a']`, which credits
+me for the part of Blue's imagined reward that my action caused.  Only worth considering in that form, and
+only if 5.1 leaves something unexplained.
 
 ## 6. Protocol and pre-registered predictions
 
@@ -272,7 +291,7 @@ ceiling.  Predictions, stated before running:
 |---|---|---|
 | own-value level `alpha * V_i(o_i')` as a shaping *reward* (through GAE) | cooperation > 0.5 (changes the objective) | no effect would mean the myopic use, not the level, is what matters |
 | own-value difference `alpha * [gamma V_i(o_i') - V_i(o_i)]` as a shaping *reward* (through GAE) | cooperation 0.50 (policy-invariant) | cooperation > 0.5 would mean the shaping argument is wrong or PPO's finite-sample dynamics matter more than the limit |
-| critic probe on EI-value checkpoints (50k, 200k, 2M) | "other adjacent to my coin" acquires a negative value between 50k and 200k | no such change: the EI-value story in 4.4 is wrong |
+| critic probe on EI-value checkpoints (50k, 200k, 2M), boards scored from the other's seat | at 50-70k: any Blue-colour coin scores low regardless of Red's position (coarse risk); by 200k: "Blue's coin with Red adjacent" scores clearly below "Blue's coin with Red far" (adjacency-specific); "safe" > "threat" throughout | no such ordering, or no change over training: the EI-value story in 4.4 is wrong |
 | imagined-EI (5.1) | approaches EI-reward (about 1.0 cooperation) | stays near 0.8 or below: the reward model, not the signal, is the bottleneck |
 | current EI-value and control with relative scaling (5.2) at `alpha` in {0.3, 1, 3} | the ranking EI-value > control survives at moderate relative weights | if the gap only exists when `X` dominates, the social increment is a large-weight artefact |
 
@@ -313,6 +332,26 @@ own-value control (SVO phi=0)   X_i = alpha * V(o_i^{t+1}; w_i)                 
 5.4 counterfactual (reward)     D_i = V(o_j^{t+1};w_i) - sum_a' pi_i(a'|o_i^t) V(o_j^{t+1}(a');w_i),   Y_i = alpha*D_i
 PPO coefficient (all)           c_i = A_i + X_i, normalised (c - mean_B c)/std_B c, with A_i from r_i + Y_i
 ```
+
+**EI, worked example.**  Two players, Red = `i`, Blue = `j`.  Red stands next to Blue's coin; it can steal
+(Red +1, Blue -2, new coin in Red's colour) or leave (Blue takes it next step: Blue +1, new coin in Red's
+colour).  Boards scored by Red's critic from Blue's seat: "threat" (Blue's coin, Red adjacent) = 7,
+"safe" (Red-colour coin on the board) = 10.  Red's own immediate reward: steal 1, leave 0.
+
+```
+variant                 EI term                                          steal          leave      result
+reward EI (lambda=0)    Y = alpha * r_blue                               1 - 2 alpha    alpha      leave if alpha > 1/3
+value EI (current)      X = alpha * V(o_blue^{t+1}; w_red)               1 + 10 alpha   7 alpha    steal, any alpha
+own-value control       X = alpha * V(o_red^{t+1}; w_red)                1 + 7 alpha    10 alpha   leave if alpha > 1/3
+5.1 imagined EI         Y = alpha * f(o_blue^t, o_blue^{t+1}; theta_red) 1 - 2 alpha    alpha      leave if alpha > 1/3
+5.2 scaled value EI     X = alpha * V(o_blue^{t+1}) * std(A)/std(X)      same ranking as value EI
+5.3 change EI           X = alpha * [V(o_blue^{t+1}) - V(o_blue^t)]      1 + 3 alpha    0          steal (same ranking)
+5.4 counterfactual EI   Y = alpha * [V(o_blue^{t+1}) - avg_a' V(...)]    1 + 3 alpha    0          steal
+```
+
+Every prospect-based row rewards the steal at the moment of decision, because the -2 is not in the next
+observation while the respawned coin makes Blue's board "safe"; the outcome-based rows penalise it.  The
+value term can produce cooperation only indirectly, by penalising the *approach* step (Section 4.4).
 
 ## References
 
