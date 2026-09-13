@@ -84,6 +84,7 @@ MAX_CYCLES=${MAX_CYCLES:-50}
 STEPS=${STEPS:-5000000}
 TIME=${TIME:-14:00:00}   # imagined/other runs at ~260 steps/s on 2 laptop cores (5M steps = 5.3 h); cluster cores are slower
 CONCURRENT=${CONCURRENT:-50}
+SBATCH_EXTRA=${SBATCH_EXTRA:-}   # extra sbatch options for every submission, e.g. "--gres=gpu:1 --cpus-per-task=4 --mem=16GB" (default: 2 CPUs, no GPU)
 PPO_SETTINGS=${PPO_SETTINGS:-"1e-3:0.01"}   # "lr:ent" pairs; one grid file / result folder per pair
 TRAIN_ARGS=${TRAIN_ARGS:-"--num-envs 8 --num-steps 256 --num-minibatches 4"}
 WARMUP_STEPS=${WARMUP_STEPS:-102400}   # imagined: plain-PPO warm-up while the reward model learns, in environment steps
@@ -185,10 +186,10 @@ case "${1:-}" in
     make_grids ;;
   tune)
     make_grids
-    for g in "${GRIDS[@]}"; do scripts/slurm/submit.sh "$g" "$CONCURRENT" --time="$TIME"; done ;;
+    for g in "${GRIDS[@]}"; do scripts/slurm/submit.sh "$g" "$CONCURRENT" --time="$TIME" $SBATCH_EXTRA; done ;;
   baseline)
     make_grids baseline
-    for g in "${GRIDS[@]}"; do scripts/slurm/submit.sh "$g" "$CONCURRENT" --time="$TIME"; done ;;
+    for g in "${GRIDS[@]}"; do scripts/slurm/submit.sh "$g" "$CONCURRENT" --time="$TIME" $SBATCH_EXTRA; done ;;
   ppo)
     # stage A1: PPO_LRS x PPO_ENTS x PPO_ROLLOUTS, each on every anchor configuration (PPO_ANCHORS, '|'-separated) and
     # PPO_SEEDS; one grid file / result folder per PPO setting: $RUN_ROOT/${TAG}_ppo_lr<lr>_ent<ent>_T<rollout>
@@ -210,7 +211,7 @@ case "${1:-}" in
           done
           n=$(grep -c . "$g"); total=$(( total + n ))
           echo "$g: $n jobs"
-          [ "${DRY_RUN:-}" = 1 ] || scripts/slurm/submit.sh "$g" "$CONCURRENT" --time="$TIME"
+          [ "${DRY_RUN:-}" = 1 ] || scripts/slurm/submit.sh "$g" "$CONCURRENT" --time="$TIME" $SBATCH_EXTRA
         done
       done
     done
@@ -222,7 +223,7 @@ case "${1:-}" in
     mkdir -p slurm_logs
     set -x
     sbatch --account="$SLURM_ACCOUNT" --mail-user="$MAIL_USER" --mail-type="$MAIL_TYPE" --job-name="$NAME" \
-      --time="$TIME" --array="$FINAL_SEEDS" scripts/slurm/run_seeds.sh $COMMON $TRAIN_ARGS "$@"
+      --time="$TIME" --array="$FINAL_SEEDS" $SBATCH_EXTRA scripts/slurm/run_seeds.sh $COMMON $TRAIN_ARGS "$@"
     { set +x; } 2>/dev/null
     echo "runs -> $RUN_ROOT/$NAME" ;;
   sweep)
@@ -241,7 +242,7 @@ case "${1:-}" in
         NAME="${TAG}_sweep_${CONF}_$(echo "$flag" | sed 's/^--//')${val}"
         set -x
         sbatch --account="$SLURM_ACCOUNT" --mail-user="$MAIL_USER" --mail-type="$MAIL_TYPE" --job-name="$NAME" \
-          --time="$TIME" --array="$PPO_SEEDS" scripts/slurm/run_seeds.sh $COMMON $TRAIN_ARGS "$@" "$flag" "$val"
+          --time="$TIME" --array="$PPO_SEEDS" $SBATCH_EXTRA scripts/slurm/run_seeds.sh $COMMON $TRAIN_ARGS "$@" "$flag" "$val"
         { set +x; } 2>/dev/null
       done
     done
