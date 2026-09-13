@@ -38,9 +38,13 @@
 #                                             PPO_SETTINGS="1e-3:0.01"
 #   A2  method hyper-parameters at that setting (alpha grids of all EI modes, the phi = 0 control, the true-reward reference;
 #       IA rows unless IA_PAIRS="" IA_VALUE_PAIRS=""):
-#         IA_PAIRS="" IA_VALUE_PAIRS="" scripts/experiments/cleanup.sh tune      # EI only: 17 configurations x 3 seeds = 51 jobs
-#         scripts/experiments/cleanup.sh tune                                    # EI + IA: 29 configurations x 3 seeds = 87 jobs
+#         GROUPS=ei scripts/experiments/cleanup.sh tune                          # EI only: 17 configurations x 3 seeds = 51 jobs
+#         GROUPS=ia TAG=cleanup_ia scripts/experiments/cleanup.sh tune           # IA / SIA only (own folder): 26 x 3 = 78 jobs
+#         scripts/experiments/cleanup.sh tune                                    # EI + IA: 42 configurations x 3 seeds = 126 jobs
 #         LEVEL_VALUE=1 scripts/experiments/cleanup.sh tune                      # + the shaped rows on the "trace + value" level
+#       IA can also join the PPO stage as an extra anchor (same folders as the running one):
+#         PPO_ANCHORS="--formulation ia --signal imagined --imagined-critic other --social-scale --alpha 0 --beta 1" \
+#             scripts/experiments/cleanup.sh ppo                                 # 12 settings x 3 seeds = 36 jobs
 #       then the imagined-specific knobs around the winner:
 #         scripts/experiments/cleanup.sh sweep "--imagined-lambda:0.95,0.99" "--reward-model-replay:0,2048" -- <configuration>
 #   C   winners on fresh seeds:  FINAL_SEEDS=7-14 scripts/experiments/cleanup.sh final <configuration>   (lines printed by `summary`)
@@ -102,6 +106,7 @@ IA_VALUE_PAIRS=${IA_VALUE_PAIRS-"1:0.1 2:0.2"}
 # LEVEL_VALUE=1 adds the `shaped + value level` rows (--imagined-level trace_value: the formulation is applied to the
 # smoothed imagined rewards PLUS my critic's forecast for the other, "what you earned lately + what you are about to earn")
 LEVEL_VALUE=${LEVEL_VALUE:-0}
+GROUPS=${GROUPS:-"ei ia"}   # which method groups the A2 grid contains (plain PPO is always in): "ei", "ia" or both
 TAG=${TAG:-cleanup}
 LAST=${LAST:-20}
 SUMMARY_TAGS="charts/collective_return charts/equality charts/waste_density/player_0 charts/apple_prob/player_0 charts/clean_actions/player_0 charts/clean_actions/player_1 charts/clean_actions/player_2"
@@ -130,12 +135,15 @@ make_grids() {
     local g="grids/${TAG}_$([ -n "$only_baseline" ] && echo baseline || echo stageA)${sfx}.txt"
     : > "$g"
     local mg="$PY scripts/make_grid.py $COMMON --seeds $SEEDS"
+    local want_ei=0 want_ia=0
+    [[ " $GROUPS " == *" ei "* ]] && want_ei=1
+    [[ " $GROUPS " == *" ia "* ]] && [ -n "$IA_PAIRS" ] && want_ia=1
     # plain PPO
     $mg --signals value --alphas 0 --formulations none --extra "$extra" >> "$g"
     # references with access to the true rewards
-    $mg --signals reward --alphas $REWARD_ALPHAS --formulations ei --extra "$extra" >> "$g"
-    [ -n "$IA_PAIRS" ] && $mg --signals reward --formulations ia --ia-pairs $IA_PAIRS --extra "$extra" >> "$g"
-    if [ -z "$only_baseline" ]; then
+    [ $want_ei = 1 ] && $mg --signals reward --alphas $REWARD_ALPHAS --formulations ei --extra "$extra" >> "$g"
+    [ $want_ia = 1 ] && $mg --signals reward --formulations ia --ia-pairs $IA_PAIRS --extra "$extra" >> "$g"
+    if [ -z "$only_baseline" ] && [ $want_ei = 1 ]; then
       # EI: imagined rewards, three ways
       $mg --signals imagined --alphas $OTHER_ALPHAS --formulations ei --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
       $mg --signals imagined --alphas $NONE_ALPHAS --formulations ei --extra "$extra $IMAGINED_ARGS --imagined-critic none --social-scale" >> "$g"
@@ -144,13 +152,15 @@ make_grids() {
       # the paper's value term (scaled) and its own-value control
       $mg --signals value --alphas $VALUE_ALPHAS --formulations ei --extra "$extra --social-scale" >> "$g"
       $mg --signals value --alphas $CONTROL_ALPHAS --formulations svo --phis 0 --extra "$extra --social-scale" >> "$g"
+    fi
+    if [ -z "$only_baseline" ] && [ $want_ia = 1 ]; then
       # IA / SIA through the advantage construction (inequity-dependent weights on the imagined advantages, my critic as
       # the others' value function); SIA is the symmetric control
-      [ -n "$IA_PAIRS" ] && $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
-      [ -n "$IA_PAIRS" ] && $mg --signals imagined --alphas $SIA_ALPHAS --formulations sia --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
-      # IA: imagined (shaped) and on values (IA_PAIRS="" IA_VALUE_PAIRS="" -> EI only)
-      [ -n "$IA_PAIRS" ] && $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped" >> "$g"
-      [ -n "$IA_PAIRS" ] && [ "$LEVEL_VALUE" = 1 ] && $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped --imagined-level trace_value" >> "$g"
+      $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
+      $mg --signals imagined --alphas $SIA_ALPHAS --formulations sia --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
+      # IA: imagined (shaped, Hughes et al. with imagined rewards) and on values (the report's IA)
+      $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped" >> "$g"
+      [ "$LEVEL_VALUE" = 1 ] && $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped --imagined-level trace_value" >> "$g"
       [ -n "$IA_VALUE_PAIRS" ] && $mg --signals value --formulations ia --ia-pairs $IA_VALUE_PAIRS --extra "$extra --social-scale" >> "$g"
     fi
     GRIDS+=("$g")
