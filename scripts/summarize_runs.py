@@ -100,7 +100,8 @@ def main() -> None:
         import csv
 
         with open(a.csv, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=cols)
+            # rows always carry the folder label ('runs'); the column is only shown for several folders
+            w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
             w.writeheader()
             w.writerows(rows)
         print(f"wrote {a.csv}")
