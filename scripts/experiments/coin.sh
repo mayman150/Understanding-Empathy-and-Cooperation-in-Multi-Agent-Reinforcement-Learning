@@ -27,6 +27,8 @@
 #   grids/coin_imagined_shaped.txt   imagined rewards through the intrinsic-reward path, all formulations
 #   grids/coin_value_sc.txt          the current value signal with --social-scale at the same relative alphas
 #   scripts/experiments/coin.sh tune-imagined     # write + submit the three grids (SVO phi=0 rows are the own-value control)
+#   PPO_SETTINGS="2.5e-4:0.01 1e-3:0.01 2.5e-4:0.05 1e-3:0.05" scripts/experiments/coin.sh tune-imagined
+#                                                 # ... crossed with PPO learning rate x entropy (one folder set per pair)
 #
 # Stage 2b (PPO sensitivity of the same configurations: PPO_LRS x PPO_ENTS, PPO_SEEDS each; the baseline and the
 # reward-signal reference get the same grid so the comparison stays fair):
@@ -103,19 +105,32 @@ make_grids() {
   echo "LaTeX tables: grids/${TAG}_value_table.tex grids/${TAG}_reward_table.tex"
 }
 
-IMAGINED_GRIDS=("grids/${TAG}_imagined_other.txt" "grids/${TAG}_imagined_shaped.txt" "grids/${TAG}_value_sc.txt")
+# `tune-imagined` crosses its grids with PPO settings: PPO_SETTINGS is a list of "lr:ent" pairs (one folder set per pair,
+# suffixed _lr<lr>_ent<ent> when there is more than one).  Default: the CleanRL defaults only.
+PPO_SETTINGS=${PPO_SETTINGS:-"2.5e-4:0.01"}
+IMAGINED_GRIDS=()
 make_imagined_grids() {
   mkdir -p grids
-  # imagined rewards, other's advantage under my critic (EI, SVO incl. the phi=0 control), relative alphas
-  $PY scripts/make_grid.py $COIN_ARGS --signals imagined --alphas $RELATIVE_ALPHAS --seeds $SEEDS \
-      --formulations ei svo --phis $IMAGINED_PHIS \
-      --extra "$TRAIN_ARGS --imagined-critic other --social-scale --imagined-warmup $IMAGINED_WARMUP" -o "${IMAGINED_GRIDS[0]}"
-  # imagined rewards through the intrinsic-reward path (all formulations), alphas in reward units
-  $PY scripts/make_grid.py $COIN_ARGS --signals imagined --alphas $REWARD_ALPHAS --seeds $SEEDS \
-      --formulations $FORMULATIONS --extra "$TRAIN_ARGS --imagined-critic shaped --imagined-warmup $IMAGINED_WARMUP" -o "${IMAGINED_GRIDS[1]}"
-  # the current value signal with relative scaling (EI, SVO incl. the phi=0 control), for the same relative alphas
-  $PY scripts/make_grid.py $COIN_ARGS --signals value --alphas $RELATIVE_ALPHAS --seeds $SEEDS \
-      --formulations ei svo --phis $IMAGINED_PHIS --extra "$TRAIN_ARGS --social-scale" -o "${IMAGINED_GRIDS[2]}"
+  IMAGINED_GRIDS=()
+  local n_settings; n_settings=$(echo $PPO_SETTINGS | wc -w)
+  for setting in $PPO_SETTINGS; do
+    local lr="${setting%%:*}" ent="${setting#*:}" sfx=""
+    [ "$n_settings" -gt 1 ] && sfx="_lr${lr}_ent${ent}"
+    local extra="$TRAIN_ARGS --learning-rate $lr --ent-coef $ent"
+    local g_other="grids/${TAG}_imagined_other${sfx}.txt" g_shaped="grids/${TAG}_imagined_shaped${sfx}.txt" g_vsc="grids/${TAG}_value_sc${sfx}.txt"
+    # imagined rewards, other's advantage under my critic (EI, SVO incl. the phi=0 control), relative alphas
+    $PY scripts/make_grid.py $COIN_ARGS --signals imagined --alphas $RELATIVE_ALPHAS --seeds $SEEDS \
+        --formulations ei svo --phis $IMAGINED_PHIS \
+        --extra "$extra --imagined-critic other --social-scale --imagined-warmup $IMAGINED_WARMUP" -o "$g_other"
+    # imagined rewards through the intrinsic-reward path (all formulations), alphas in reward units
+    $PY scripts/make_grid.py $COIN_ARGS --signals imagined --alphas $REWARD_ALPHAS --seeds $SEEDS \
+        --formulations $FORMULATIONS --extra "$extra --imagined-critic shaped --imagined-warmup $IMAGINED_WARMUP" -o "$g_shaped"
+    # the current value signal with relative scaling (EI, SVO incl. the phi=0 control), for the same relative alphas
+    $PY scripts/make_grid.py $COIN_ARGS --signals value --alphas $RELATIVE_ALPHAS --seeds $SEEDS \
+        --formulations ei svo --phis $IMAGINED_PHIS --extra "$extra --social-scale" -o "$g_vsc"
+    IMAGINED_GRIDS+=("$g_other" "$g_shaped" "$g_vsc")
+  done
+  echo "tune-imagined: ${#IMAGINED_GRIDS[@]} grid files, $(cat "${IMAGINED_GRIDS[@]}" | grep -c .) jobs (PPO settings: $PPO_SETTINGS)"
 }
 
 case "${1:-}" in
@@ -181,11 +196,18 @@ case "${1:-}" in
     done
     echo "runs -> $RUN_ROOT/${TAG}_sweep_${CONF}_*" ;;
   summary)
-    for g in value reward imagined_other imagined_shaped value_sc; do
-      [ -d "$RUN_ROOT/${TAG}_$g" ] || continue
-      echo "=== $g ($RUN_ROOT/${TAG}_$g)"
-      $PY scripts/summarize_runs.py "$RUN_ROOT/${TAG}_$g" --last "$LAST" --csv "${TAG}_${g}.csv" --tags $SUMMARY_TAGS
+    for d in "$RUN_ROOT/${TAG}_value" "$RUN_ROOT/${TAG}_reward" "$RUN_ROOT/${TAG}_imagined_other"* \
+             "$RUN_ROOT/${TAG}_imagined_shaped"* "$RUN_ROOT/${TAG}_value_sc"*; do
+      [ -d "$d" ] || continue
+      echo "=== $(basename "$d")"
+      $PY scripts/summarize_runs.py "$d" --last "$LAST" --csv "$(basename "$d").csv" --tags $SUMMARY_TAGS
     done
+    IMAGINED_DIRS=$(ls -d "$RUN_ROOT/${TAG}_imagined_"* "$RUN_ROOT/${TAG}_value_sc"* 2>/dev/null || true)
+    if [ -n "$IMAGINED_DIRS" ]; then
+      echo "=== best configuration per method across the imagined / scaled-value grids (all PPO settings)"
+      # shellcheck disable=SC2086
+      $PY scripts/best_configs.py $IMAGINED_DIRS --last "$LAST" --top "${TOP:-5}"
+    fi
     FINAL_DIRS=$(ls -d "$RUN_ROOT/${TAG}_final_"* 2>/dev/null || true)
     if [ -n "$FINAL_DIRS" ]; then
       echo "=== final (fresh seeds), one row per configuration"
