@@ -440,7 +440,8 @@ if __name__ == "__main__":
                 v_cross_next, _ = agents.cross_values(flat_next)
                 adv_cross = cross_gae(
                     rhat, v_cross.reshape(T, E, N, N), v_cross_next.reshape(T, E, N, N),
-                    term_buf, episode_end, args.gamma, args.gae_lambda,
+                    term_buf, episode_end, args.gamma,
+                    args.gae_lambda if args.imagined_lambda is None else args.imagined_lambda,
                 )
                 z = torch.where(eye, scaled_advantages.unsqueeze(-1).expand(-1, -1, -1, N), adv_cross)
                 if args.social_scale:

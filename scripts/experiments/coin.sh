@@ -33,7 +33,10 @@
 #   scripts/experiments/coin.sh ppo --formulation svo --signal value --alpha 30 --phi 0.523599
 #   scripts/experiments/coin.sh ppo --formulation none
 #   PPO_LRS="1e-4 1e-3" PPO_ENTS="0.01 0.05 0.1" scripts/experiments/coin.sh ppo --formulation ia --signal value --alpha 10 --beta 1
-#   scripts/experiments/coin.sh summary    # also prints the final table and one PPO table per configuration
+# Other hyper-parameters, one at a time around a configuration (`sweep`; folders ${TAG}_sweep_*):
+#   scripts/experiments/coin.sh sweep "--imagined-warmup:5,20,50" "--reward-model-coef:0.3,1,3" "--imagined-lambda:0.95,1" \
+#       -- --formulation ei --signal imagined --imagined-critic other --social-scale --alpha 1
+#   scripts/experiments/coin.sh summary    # also prints the final table, one PPO table per configuration and the ranking
 #
 # Alpha grids (from local 1M-step probes, seed 1).  Value signal: the two families need different scales.  Gap
 # terms (SIA, IA) see |V_i(o_i) - V_i(o_j)| ~ 0.8-1 against an advantage of ~1, and SIA only moved behaviour at
@@ -73,7 +76,7 @@ REWARD_ALPHAS=${REWARD_ALPHAS:-"0 0.003 0.01 0.03 0.1 0.3 1 3"}
 # --signal imagined (`tune-imagined`): `other` = EI/SVO on the other's imagined advantage with --social-scale, so alpha is
 # a weight relative to the own advantage; `shaped` = imagined rewards as intrinsic reward, alpha in reward units.
 # SVO with phi = 0 is the own-value control (in `other` mode it collapses to plain PPO by construction).
-RELATIVE_ALPHAS=${RELATIVE_ALPHAS:-"0.3 1 3"}
+RELATIVE_ALPHAS=${RELATIVE_ALPHAS:-"0.3 0.5 1 2 3"}   # the local probe jumped from no effect (0.3) to full cooperation (1)
 IMAGINED_PHIS=${IMAGINED_PHIS:-"pi/6 pi/4 0"}
 IMAGINED_WARMUP=${IMAGINED_WARMUP:-20}
 TRAIN_ARGS=${TRAIN_ARGS:-"--num-envs 8 --num-steps 128 --num-minibatches 4"}
@@ -154,6 +157,29 @@ case "${1:-}" in
       done
     done
     echo "runs -> $RUN_ROOT/${TAG}_ppo_${CONF}_lr*_ent*" ;;
+  sweep)
+    # One-at-a-time sensitivity of arbitrary train.py flags around ONE configuration:
+    #   coin.sh sweep "--imagined-warmup:5,20,50" "--reward-model-coef:0.3,1,3" "--imagined-lambda:0.95,1" -- <config args>
+    # One job array (PPO_SEEDS) per value; folders $RUN_ROOT/${TAG}_sweep_<configuration>_<flag><value>.
+    # The swept flag is appended last, so it overrides the same flag in the configuration if present.
+    shift
+    SPECS=()
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do SPECS+=("$1"); shift; done
+    [ "${1:-}" = "--" ] && shift
+    [ ${#SPECS[@]} -gt 0 ] && [ $# -gt 0 ] || { echo "usage: $0 sweep \"--flag:v1,v2\" [...] -- <train.py args of one configuration>"; exit 1; }
+    CONF="$(echo "$*" | sed -e 's/--//g' -e 's/[ ,]/_/g')"
+    mkdir -p slurm_logs
+    for spec in "${SPECS[@]}"; do
+      flag="${spec%%:*}"; vals="${spec#*:}"
+      for val in ${vals//,/ }; do
+        NAME="${TAG}_sweep_${CONF}_$(echo "$flag" | sed 's/^--//')${val}"
+        set -x
+        sbatch --account="$SLURM_ACCOUNT" --mail-user="$MAIL_USER" --mail-type="$MAIL_TYPE" --job-name="$NAME" \
+          --time="$TIME" --array="$PPO_SEEDS" scripts/slurm/run_seeds.sh $COIN_ARGS $TRAIN_ARGS "$@" "$flag" "$val"
+        { set +x; } 2>/dev/null
+      done
+    done
+    echo "runs -> $RUN_ROOT/${TAG}_sweep_${CONF}_*" ;;
   summary)
     for g in value reward imagined_other imagined_shaped value_sc; do
       [ -d "$RUN_ROOT/${TAG}_$g" ] || continue
@@ -172,10 +198,10 @@ case "${1:-}" in
       # shellcheck disable=SC2086
       $PY scripts/summarize_runs.py "$conf"_lr*_ent* --last "$LAST" --tags $SUMMARY_TAGS
     done
-    # ... and the ranking per method across all of them, with the stage-B command for every winner
-    PPO_DIRS=$(ls -d "$RUN_ROOT/${TAG}_ppo_"* 2>/dev/null || true)
+    # ... and the ranking per method across all of them (PPO grid + flag sweeps), with the stage-B command per winner
+    PPO_DIRS=$(ls -d "$RUN_ROOT/${TAG}_ppo_"* "$RUN_ROOT/${TAG}_sweep_"* 2>/dev/null || true)
     if [ -n "$PPO_DIRS" ]; then
-      echo "=== best (alpha, PPO setting) per method across the PPO grid"
+      echo "=== best configuration per method across the PPO grid and the flag sweeps"
       # shellcheck disable=SC2086
       $PY scripts/best_configs.py $PPO_DIRS --last "$LAST" --top "${TOP:-5}"
     fi ;;

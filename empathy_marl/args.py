@@ -66,6 +66,9 @@ class Args:
     through the intrinsic-reward path of signal=reward (all formulations, recurrent ok)"""
     imagined_warmup: int = 20
     """signal=imagined: iterations during which the reward model trains but the social term is off"""
+    imagined_lambda: Optional[float] = None
+    """signal=imagined/other: GAE lambda of the other's imagined advantage (default: --gae-lambda). 1.0 = the other's
+    imagined return with my critic used only at the rollout boundary, i.e. the reward model without the value idea"""
     reward_model_coef: float = 1.0
     """signal=imagined: weight of the reward-model regression loss (own transitions -> own reward)"""
     social_scale: bool = False
@@ -130,6 +133,8 @@ def resolve(args: Args) -> Args:
             raise ValueError("--imagined-critic other is implemented for feed-forward agents; use --imagined-critic shaped")
     if args.imagined_warmup < 0 or args.reward_model_coef < 0:
         raise ValueError("--imagined-warmup and --reward-model-coef must be >= 0")
+    if args.imagined_lambda is not None and not 0.0 <= args.imagined_lambda <= 1.0:
+        raise ValueError("--imagined-lambda must be in [0, 1]")
     if args.num_envs < 1 or args.num_steps < 1 or args.num_minibatches < 1:
         raise ValueError("num_envs, num_steps and num_minibatches must be >= 1")
     if args.num_agents < 2:
