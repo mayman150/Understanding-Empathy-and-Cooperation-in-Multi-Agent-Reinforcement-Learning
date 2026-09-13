@@ -29,13 +29,14 @@
 #   scripts/experiments/cleanup.sh tune                  # write + submit (3 seeds x 29 configurations = 87 jobs per PPO setting)
 #   PPO_SETTINGS="2.5e-4:0.01 1e-3:0.01" scripts/experiments/cleanup.sh tune      # crossed with PPO settings
 #   scripts/experiments/cleanup.sh baseline              # plain PPO + EI/IA with true rewards only (cheap PPO check first)
+#   IA_PAIRS="" IA_VALUE_PAIRS="" scripts/experiments/cleanup.sh tune   # EI only (17 configurations x 3 seeds = 51 jobs)
 #   scripts/experiments/cleanup.sh summary               # tables per folder + ranking per method + stage-B `final` lines
 #   STEPS=3000000 TIME=06:00:00 FINAL_SEEDS=7-14 scripts/experiments/cleanup.sh final --formulation ei --signal imagined \
 #       --imagined-critic other --social-scale --alpha 1 --imagined-warmup 50 --reward-model-replay 2048
 #   scripts/experiments/cleanup.sh sweep "--imagined-lambda:0.95,0.99" "--reward-model-replay:0,2048" -- <configuration>
 #
 # Budget: about 260 steps/s for imagined/other and 730 for plain PPO on 2 laptop cores (8 envs x 256 steps, small CNN);
-# 3M steps is therefore 1-3.5 h per job.  TIME defaults to 6 h.
+# 3M steps is therefore 1-3.5 h per job on the laptop and roughly twice that on the cluster.  TIME defaults to 10 h.
 #
 # Metrics to read (charts/<key>/<agent> from the environment's episode statistics, plus the usual ones):
 #   collective_return   apples eaten per episode by all agents (the public good works iff this goes up)
@@ -59,7 +60,7 @@ FINAL_SEEDS=${FINAL_SEEDS:-"4-11"}
 NUM_AGENTS=${NUM_AGENTS:-3}
 MAX_CYCLES=${MAX_CYCLES:-50}
 STEPS=${STEPS:-3000000}
-TIME=${TIME:-06:00:00}
+TIME=${TIME:-10:00:00}   # imagined/other runs at ~260 steps/s on 2 laptop cores (3M steps = 3.2 h); cluster cores are slower
 CONCURRENT=${CONCURRENT:-50}
 PPO_SETTINGS=${PPO_SETTINGS:-"1e-3:0.01"}   # "lr:ent" pairs; one grid file / result folder per pair
 TRAIN_ARGS=${TRAIN_ARGS:-"--num-envs 8 --num-steps 256 --num-minibatches 4"}
@@ -97,7 +98,7 @@ make_grids() {
     $mg --signals value --alphas 0 --formulations none --extra "$extra" >> "$g"
     # references with access to the true rewards
     $mg --signals reward --alphas $REWARD_ALPHAS --formulations ei --extra "$extra" >> "$g"
-    $mg --signals reward --formulations ia --ia-pairs $IA_PAIRS --extra "$extra" >> "$g"
+    [ -n "$IA_PAIRS" ] && $mg --signals reward --formulations ia --ia-pairs $IA_PAIRS --extra "$extra" >> "$g"
     if [ -z "$only_baseline" ]; then
       # EI: imagined rewards, three ways
       $mg --signals imagined --alphas $OTHER_ALPHAS --formulations ei --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
@@ -106,9 +107,9 @@ make_grids() {
       # the paper's value term (scaled) and its own-value control
       $mg --signals value --alphas $VALUE_ALPHAS --formulations ei --extra "$extra --social-scale" >> "$g"
       $mg --signals value --alphas $CONTROL_ALPHAS --formulations svo --phis 0 --extra "$extra --social-scale" >> "$g"
-      # IA: imagined (shaped) and on values
-      $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped" >> "$g"
-      $mg --signals value --formulations ia --ia-pairs $IA_VALUE_PAIRS --extra "$extra --social-scale" >> "$g"
+      # IA: imagined (shaped) and on values (IA_PAIRS="" IA_VALUE_PAIRS="" -> EI only)
+      [ -n "$IA_PAIRS" ] && $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped" >> "$g"
+      [ -n "$IA_VALUE_PAIRS" ] && $mg --signals value --formulations ia --ia-pairs $IA_VALUE_PAIRS --extra "$extra --social-scale" >> "$g"
     fi
     GRIDS+=("$g")
     echo "$g: $(grep -c . "$g") jobs ($(grep -c -- '--seed 1$' "$g") configurations x $(echo $SEEDS | wc -w) seeds)"
