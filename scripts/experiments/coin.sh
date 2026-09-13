@@ -92,6 +92,7 @@ VALUE_GRID="grids/${TAG}_value.txt"
 REWARD_GRID="grids/${TAG}_reward.txt"
 SUMMARY_TAGS="charts/collective_return charts/equality charts/cooperation_rate/player_0 charts/cooperation_rate/player_1"
 LAST=${LAST:-20}   # summary: mean of the last K logged points; episode metrics are logged once per batch of 8 finished episodes (20 = 8k steps)
+LAST_STEPS=${LAST_STEPS:-20000}   # ... or, when set, of the last N environment steps (default 20k, about 50 points); takes precedence
 
 make_grids() {
   mkdir -p grids
@@ -200,32 +201,32 @@ case "${1:-}" in
              "$RUN_ROOT/${TAG}_imagined_shaped"* "$RUN_ROOT/${TAG}_value_sc"*; do
       [ -d "$d" ] || continue
       echo "=== $(basename "$d")"
-      $PY scripts/summarize_runs.py "$d" --last "$LAST" --csv "$(basename "$d").csv" --tags $SUMMARY_TAGS
+      $PY scripts/summarize_runs.py "$d" --last "$LAST" --last-steps "$LAST_STEPS" --csv "$(basename "$d").csv" --tags $SUMMARY_TAGS
     done
     IMAGINED_DIRS=$(ls -d "$RUN_ROOT/${TAG}_imagined_"* "$RUN_ROOT/${TAG}_value_sc"* 2>/dev/null || true)
     if [ -n "$IMAGINED_DIRS" ]; then
       echo "=== best configuration per method across the imagined / scaled-value grids (all PPO settings)"
       # shellcheck disable=SC2086
-      $PY scripts/best_configs.py $IMAGINED_DIRS --last "$LAST" --top "${TOP:-5}"
+      $PY scripts/best_configs.py $IMAGINED_DIRS --last "$LAST" --last-steps "$LAST_STEPS" --top "${TOP:-5}"
     fi
     FINAL_DIRS=$(ls -d "$RUN_ROOT/${TAG}_final_"* 2>/dev/null || true)
     if [ -n "$FINAL_DIRS" ]; then
       echo "=== final (fresh seeds), one row per configuration"
       # shellcheck disable=SC2086
-      $PY scripts/summarize_runs.py $FINAL_DIRS --last "$LAST" --csv "${TAG}_final.csv" --tags $SUMMARY_TAGS
+      $PY scripts/summarize_runs.py $FINAL_DIRS --last "$LAST" --last-steps "$LAST_STEPS" --csv "${TAG}_final.csv" --tags $SUMMARY_TAGS
     fi
     # PPO sensitivity: one table per configuration, rows = (lr, ent) settings
     ls -d "$RUN_ROOT/${TAG}_ppo_"*_lr*_ent* 2>/dev/null | sed -E 's/_lr[^_]+_ent[^_]+$//' | sort -u | while read -r conf; do
       echo "=== PPO sensitivity: $(basename "$conf" | sed "s/^${TAG}_ppo_//")"
       # shellcheck disable=SC2086
-      $PY scripts/summarize_runs.py "$conf"_lr*_ent* --last "$LAST" --tags $SUMMARY_TAGS
+      $PY scripts/summarize_runs.py "$conf"_lr*_ent* --last "$LAST" --last-steps "$LAST_STEPS" --tags $SUMMARY_TAGS
     done
     # ... and the ranking per method across all of them (PPO grid + flag sweeps), with the stage-B command per winner
     PPO_DIRS=$(ls -d "$RUN_ROOT/${TAG}_ppo_"* "$RUN_ROOT/${TAG}_sweep_"* 2>/dev/null || true)
     if [ -n "$PPO_DIRS" ]; then
       echo "=== best configuration per method across the PPO grid and the flag sweeps"
       # shellcheck disable=SC2086
-      $PY scripts/best_configs.py $PPO_DIRS --last "$LAST" --top "${TOP:-5}"
+      $PY scripts/best_configs.py $PPO_DIRS --last "$LAST" --last-steps "$LAST_STEPS" --top "${TOP:-5}"
     fi ;;
   *)
     sed -n '2,40p' "$0"; exit 1 ;;

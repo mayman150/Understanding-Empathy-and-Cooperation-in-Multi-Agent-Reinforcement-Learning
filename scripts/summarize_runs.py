@@ -1,4 +1,5 @@
-"""Summarise TensorBoard runs into one table (mean of the last K logged values per tag).
+"""Summarise TensorBoard runs into one table (mean of the last K logged values per tag, or of the last N environment
+steps with --last-steps).
 
     python scripts/summarize_runs.py runs/ --tags charts/collective_return charts/cooperation_rate/player_0 --last 20
     python scripts/summarize_runs.py runs/ --csv results.csv
@@ -30,16 +31,28 @@ DEFAULT_TAGS = [
 RUN_RE = re.compile(r"^(?P<env>.+?)__(?P<method>[a-z]+(?:_[a-z]+)*)__(?P<policy>ff|lstm)__(?P<params>.+?)__s(?P<seed>\d+)__\d+$")
 
 
-def load_run(run_dir: str, tags: list[str], last: int) -> dict[str, float]:
+def final_window(scalars, last: int, last_steps: int | None) -> list[float]:
+    """Values of the final window: the last ``last_steps`` environment steps if given (at least one point), else the
+    last ``last`` logged points."""
+    if not scalars:
+        return []
+    if last_steps:
+        end = scalars[-1].step
+        window = [s.value for s in scalars if s.step > end - last_steps]
+        return window or [scalars[-1].value]
+    return [s.value for s in scalars[-last:]]
+
+
+def load_run(run_dir: str, tags: list[str], last: int, last_steps: int | None = None) -> dict[str, float]:
     acc = EventAccumulator(run_dir, size_guidance={"scalars": 0})
     acc.Reload()
     out = {}
     available = set(acc.Tags().get("scalars", []))
     for tag in tags:
         if tag in available:
-            values = [s.value for s in acc.Scalars(tag)]
+            values = final_window(acc.Scalars(tag), last, last_steps)
             if values:
-                out[tag] = float(np.mean(values[-last:]))
+                out[tag] = float(np.mean(values))
     return out
 
 
@@ -56,6 +69,8 @@ def main() -> None:
     p.add_argument("roots", nargs="+", metavar="root", help="result folder(s); with several, a 'runs' column tells them apart")
     p.add_argument("--tags", nargs="*", default=DEFAULT_TAGS)
     p.add_argument("--last", type=int, default=20, help="average over the last K logged points")
+    p.add_argument("--last-steps", type=int, default=None,
+                   help="instead of --last: average over the points of the last N environment steps (e.g. 20000)")
     p.add_argument("--csv", default=None)
     p.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1), help="parallel workers for reading event files")
     a = p.parse_args()
@@ -68,7 +83,7 @@ def main() -> None:
                 run_dirs.append(d)
                 run_roots.append(root)
     with ProcessPoolExecutor(max_workers=max(1, a.jobs)) as pool:
-        loaded = list(pool.map(load_run, run_dirs, [a.tags] * len(run_dirs), [a.last] * len(run_dirs)))
+        loaded = list(pool.map(load_run, run_dirs, [a.tags] * len(run_dirs), [a.last] * len(run_dirs), [a.last_steps] * len(run_dirs)))
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for run_dir, root, metrics in zip(run_dirs, run_roots, loaded):
         m = RUN_RE.match(os.path.basename(run_dir))

@@ -114,6 +114,7 @@ SVO_PHIS=${SVO_PHIS:-"pi/4 pi/3"}        # pi/2 is EI, 0 is the own-value contro
 SVO_SHAPED_ALPHAS=${SVO_SHAPED_ALPHAS:-"0.1"}
 TAG=${TAG:-cleanup}
 LAST=${LAST:-20}
+LAST_STEPS=${LAST_STEPS:-20000}   # summary / ranking window: mean over the last 20k environment steps (about 50 logged points here)
 SUMMARY_TAGS="charts/collective_return charts/equality charts/waste_density/player_0 charts/apple_prob/player_0 charts/clean_actions/player_0 charts/clean_actions/player_1 charts/clean_actions/player_2"
 COMMON="--env-id cleanup --num-agents $NUM_AGENTS --max-cycles $MAX_CYCLES --total-timesteps $STEPS"
 
@@ -251,30 +252,30 @@ case "${1:-}" in
     for d in "$RUN_ROOT/${TAG}_baseline"* "$RUN_ROOT/${TAG}_stageA"*; do
       [ -d "$d" ] || continue
       echo "=== $(basename "$d")"
-      $PY scripts/summarize_runs.py "$d" --last "$LAST" --csv "$(basename "$d").csv" --tags $SUMMARY_TAGS
+      $PY scripts/summarize_runs.py "$d" --last "$LAST" --last-steps "$LAST_STEPS" --csv "$(basename "$d").csv" --tags $SUMMARY_TAGS
     done
     PPO_DIRS=$(ls -d "$RUN_ROOT/${TAG}_ppo_"* 2>/dev/null || true)
     if [ -n "$PPO_DIRS" ]; then
       echo "=== stage A1: PPO settings (rows = lr / ent / rollout folders) per anchor configuration"
       # shellcheck disable=SC2086
-      $PY scripts/summarize_runs.py $PPO_DIRS --last "$LAST" --csv "${TAG}_ppo.csv" --tags $SUMMARY_TAGS
+      $PY scripts/summarize_runs.py $PPO_DIRS --last "$LAST" --last-steps "$LAST_STEPS" --csv "${TAG}_ppo.csv" --tags $SUMMARY_TAGS
       echo "=== stage A1: best PPO setting per anchor (mean - std of the final collective return)"
       # shellcheck disable=SC2086
-      $PY scripts/best_configs.py $PPO_DIRS --last "$LAST" --top "${TOP:-6}" --final-time "$TIME" \
+      $PY scripts/best_configs.py $PPO_DIRS --last "$LAST" --last-steps "$LAST_STEPS" --top "${TOP:-6}" --final-time "$TIME" \
           --tags charts/collective_return charts/equality charts/clean_actions/player_0 charts/waste_density/player_0
     fi
     DIRS=$(ls -d "$RUN_ROOT/${TAG}_baseline"* "$RUN_ROOT/${TAG}_stageA"* "$RUN_ROOT/${TAG}_sweep_"* 2>/dev/null || true)
     if [ -n "$DIRS" ]; then
       echo "=== best configuration per method (all folders), ranked by final collective return (mean - std over seeds)"
       # shellcheck disable=SC2086
-      $PY scripts/best_configs.py $DIRS --last "$LAST" --top "${TOP:-4}" --final-time "$TIME" \
+      $PY scripts/best_configs.py $DIRS --last "$LAST" --last-steps "$LAST_STEPS" --top "${TOP:-4}" --final-time "$TIME" \
           --tags charts/collective_return charts/equality charts/clean_actions/player_0 charts/waste_density/player_0
     fi
     FINAL_DIRS=$(ls -d "$RUN_ROOT/${TAG}_final_"* 2>/dev/null || true)
     if [ -n "$FINAL_DIRS" ]; then
       echo "=== final (fresh seeds), one row per configuration"
       # shellcheck disable=SC2086
-      $PY scripts/summarize_runs.py $FINAL_DIRS --last "$LAST" --csv "${TAG}_final.csv" --tags $SUMMARY_TAGS
+      $PY scripts/summarize_runs.py $FINAL_DIRS --last "$LAST" --last-steps "$LAST_STEPS" --csv "${TAG}_final.csv" --tags $SUMMARY_TAGS
     fi ;;
   *)
     sed -n '2,45p' "$0"; exit 1 ;;

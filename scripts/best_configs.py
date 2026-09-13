@@ -38,7 +38,18 @@ IGNORED = {
 TRAIN_ARG_KEYS = ["num_envs", "num_steps", "num_minibatches", "learning_rate", "ent_coef"]  # -> TRAIN_ARGS of coin.sh
 
 
-def load_run(run_dir: str, tags: list[str], last: int) -> dict:
+def final_window(scalars, last: int, last_steps: int | None) -> list[float]:
+    """The last ``last_steps`` environment steps (at least one point) if given, else the last ``last`` logged points."""
+    if not scalars:
+        return []
+    if last_steps:
+        end = scalars[-1].step
+        window = [s.value for s in scalars if s.step > end - last_steps]
+        return window or [scalars[-1].value]
+    return [s.value for s in scalars[-last:]]
+
+
+def load_run(run_dir: str, tags: list[str], last: int, last_steps: int | None = None) -> dict:
     with open(os.path.join(run_dir, "args.json")) as f:
         args = json.load(f)
     acc = EventAccumulator(run_dir, size_guidance={"scalars": 0})
@@ -47,9 +58,9 @@ def load_run(run_dir: str, tags: list[str], last: int) -> dict:
     metrics = {}
     for tag in tags:
         if tag in available:
-            values = [s.value for s in acc.Scalars(tag)]
+            values = final_window(acc.Scalars(tag), last, last_steps)
             if values:
-                metrics[tag] = float(np.mean(values[-last:]))
+                metrics[tag] = float(np.mean(values))
     steps = [s.step for s in acc.Scalars(tags[0])] if tags[0] in available else [0]
     return {"args": args, "metrics": metrics, "last_step": max(steps)}
 
@@ -93,6 +104,8 @@ def main() -> None:
     p.add_argument("--metric", default="charts/collective_return", help="ranking metric (final value)")
     p.add_argument("--tags", nargs="*", default=DEFAULT_TAGS, help="metrics to show (the ranking metric is added)")
     p.add_argument("--last", type=int, default=20, help="average over the last K logged points")
+    p.add_argument("--last-steps", type=int, default=None,
+                   help="instead of --last: average over the points of the last N environment steps (e.g. 20000)")
     p.add_argument("--top", type=int, default=5, help="rows per method")
     p.add_argument("--rank", choices=["mean", "lcb"], default="lcb",
                    help="rank by the seed mean, or by mean - std (lcb: prefers configurations that are good on every seed)")
@@ -110,7 +123,7 @@ def main() -> None:
     if not run_dirs:
         raise SystemExit("no runs found")
     with ProcessPoolExecutor(max_workers=max(1, a.jobs)) as pool:
-        loaded = list(pool.map(load_run, run_dirs, [tags] * len(run_dirs), [a.last] * len(run_dirs)))
+        loaded = list(pool.map(load_run, run_dirs, [tags] * len(run_dirs), [a.last] * len(run_dirs), [a.last_steps] * len(run_dirs)))
 
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for run in loaded:
@@ -143,7 +156,8 @@ def main() -> None:
         varying = sorted(
             k for k in rows[0]["args"] if k not in IGNORED and len({json.dumps(r["args"][k]) for r in rows}) > 1
         )
-        rule = "mean - std over seeds" if a.rank == "lcb" else "mean over seeds"
+        window = f"last {a.last_steps} env steps" if a.last_steps else f"last {a.last} logged points"
+        rule = ("mean - std over seeds" if a.rank == "lcb" else "mean over seeds") + f", {window}"
         print(f"\n=== {method}: {len(rows)} configurations, ranked by final {a.metric} ({rule})  (varying: {', '.join(varying) or 'nothing'})")
         short = {t: "/".join(t.split("/")[1:]) for t in tags}  # charts/cooperation_rate/player_0 -> cooperation_rate/player_0
         header = [f"{k:>12s}" for k in varying] + [f"{'seeds':>5s}", f"{'steps':>7s}", f"{'score':>7s}"] + [f"{short[t]:>28s}" for t in tags]
