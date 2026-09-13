@@ -297,3 +297,26 @@ def test_train_shaped_with_value_level(tmp_path):
                "--imagined-level", "trace_value", *extra]
         res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=120)
         assert res.returncode != 0 and message in res.stderr
+
+
+@pytest.mark.parametrize(
+    "extra, method",
+    [
+        (["--formulation", "ei", "--alpha", "1", "--social-scale"], "ei_imagined_level_sc"),
+        (["--formulation", "ia", "--alpha", "1", "--beta", "0.1"], "ia_imagined_level"),
+    ],
+)
+def test_train_imagined_level_in_the_coefficient(extra, method, tmp_path):
+    """--imagined-critic level: F(smoothed imagined rewards + w * gamma * V_i(o_j')) added to the advantage."""
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    out = _run(COIN_FAST + ["--signal", "imagined", "--imagined-critic", "level", "--imagined-warmup", "1", *extra], tmp_path)
+    assert "iteration=3/3" in out
+    run_dirs = glob.glob(str(tmp_path / f"coin__{method}__*"))
+    assert len(run_dirs) == 1, glob.glob(str(tmp_path / "*"))
+    acc = EventAccumulator(run_dirs[0], size_guidance={"scalars": 0})
+    acc.Reload()
+    term = [s.value for s in acc.Scalars("social/term_abs_mean/player_0")]
+    assert term[0] == 0.0 and any(v > 0.0 for v in term[1:])  # off during the warm-up, on afterwards
+    with open(os.path.join(run_dirs[0], "args.json")) as f:
+        assert json.load(f)["level_value_weight"] == pytest.approx((1 - 0.99) / (1 - 0.99 * 0.975))

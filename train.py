@@ -268,6 +268,8 @@ if __name__ == "__main__":
     imagined_other = use_imagined and args.formulation != "none" and args.imagined_critic in ("other", "none")
     imagined_no_critic = imagined_other and args.imagined_critic == "none"
     imagined_shaped = use_imagined and args.formulation != "none" and args.imagined_critic == "shaped"
+    # `level`: the report's coefficient term on "smoothed imagined rewards + w * gamma * V_i(o_j')" (no reward change)
+    imagined_level = use_imagined and args.formulation != "none" and args.imagined_critic == "level"
     print(f"env={args.env_id} agents={N} envs={E} obs={obs_shape} ({bundle.obs_type}) actions={bundle.single_action_space.n}")
     print(
         f"formulation={args.formulation} signal={args.signal} alpha={alpha.tolist()} beta={beta.tolist()} "
@@ -295,7 +297,7 @@ if __name__ == "__main__":
     )
     imagined_shaper = (
         ImaginedRewardShaper(args.formulation, alpha, beta, phi, args.gamma, args.reward_lambda, E, N, device, args.social_aggregate)
-        if imagined_shaped
+        if imagined_shaped or imagined_level
         else None
     )
     eye = torch.eye(N, dtype=torch.bool, device=device)
@@ -497,8 +499,18 @@ if __name__ == "__main__":
                 if args.social_scale:
                     z = torch.where(eye, z, standardize(adv_cross, dims=(0, 1)))
                 social[:] = social_term(args.formulation, z, alpha, beta, phi, args.social_aggregate) if social_on else 0.0
+            # signal=imagined, critic=level: X_i = F_i(z), z_ij = ehat_ij + w * gamma * V_i(o_j') (level in the coefficient,
+            # the report's mechanism with the imagined rewards added; the traces advance step by step like the shaped path)
+            if imagined_level:
+                v_next, _ = agents.cross_values(next_obs_buf.reshape((T * E, N) + obs_shape))
+                v_next = args.level_value_weight * args.gamma * v_next.reshape(T, E, N, N) * (1.0 - term_buf).unsqueeze(2)
+                levels = torch.stack([imagined_shaper.update(rhat[t], dones[t], v_next[t]) for t in range(T)])  # (T, E, N, N)
+                z = standardize(levels, dims=(0, 1)) if args.social_scale else levels
+                social[:] = social_term(args.formulation, z, alpha, beta, phi, args.social_aggregate) if social_on else 0.0
             # signal=reward / imagined-shaped: the intrinsic term already entered `rewards` (and GAE)
-            advantage_coef = scaled_advantages + social if (use_value_signal or imagined_other) else advantages
+            advantage_coef = (
+                scaled_advantages + social if (use_value_signal or imagined_other or imagined_level) else advantages
+            )
 
         # flatten the batch: row = t * E + e (time-major, as required by the LSTM) ------------------
         b_obs = obs.reshape((T * E, N) + obs_shape)

@@ -42,6 +42,12 @@ Signals
       to the advantage.  With lambda = 1 this is the policy gradient of ``J_i + alpha * J_j^imagined``;
       the value function plays its usual role (bootstrap / baseline of a return made of
       outcomes) instead of standing in for the reward.
+    * ``level``: the report's coefficient term with a richer level: ``X_i = F_i(z)`` with
+      ``z[i, j] = ehat_ij + w * gamma * V_i(o_j')`` (the smoothed imagined rewards plus my critic on
+      the other's next observation), added to the advantage like the value signal.  It is
+      ``other`` without the baseline plus a history term (for EI: the same expected gradient with
+      more variance); for the inequity formulations it is one-step shaping on a level.  Kept as an
+      explicit row so that the comparison with ``other`` and ``shaped`` is empirical.
     * ``none``: the ablation of ``other`` without a critic: ``z[i, j]`` is the lambda-discounted sum of
       *j*'s imagined rewards from ``t`` on (``delta = rhat_ij``, no baseline, no bootstrap), so the
       consequences of my action that arrive after the rollout window, or that the critic would carry
@@ -60,7 +66,7 @@ import torch
 
 FORMULATIONS = ("none", "ei", "svo", "sia", "ia")
 SIGNALS = ("value", "reward", "imagined")
-IMAGINED_CRITICS = ("other", "shaped", "none")
+IMAGINED_CRITICS = ("other", "shaped", "none", "level")
 AGGREGATES = ("mean", "sum")
 
 
@@ -219,7 +225,14 @@ class ImaginedRewardShaper:
         about to earn", the ``trace_value`` level of ``--imagined-level``; the caller supplies
         ``weight * gamma * V_i(o_j')``).  The trace itself is unaffected.
         """
+        level = self.update(imagined, episode_start, value_level)
+        return social_term(self.formulation, level, self.alpha, self.beta, self.phi, self.aggregate)
+
+    def update(
+        self, imagined: torch.Tensor, episode_start: torch.Tensor, value_level: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """Advance the traces and return the level ``z[e, i, j]`` (trace, plus ``value_level`` if given) without
+        applying the formulation (``--imagined-critic level`` applies it in the policy-update coefficient instead)."""
         reset = (1.0 - episode_start).unsqueeze(1)  # (E, 1, N): the trace of observed agent j restarts with j's episode
         self.e = self.decay * self.e * reset + imagined
-        level = self.e if value_level is None else self.e + value_level
-        return social_term(self.formulation, level, self.alpha, self.beta, self.phi, self.aggregate)
+        return self.e if value_level is None else self.e + value_level
