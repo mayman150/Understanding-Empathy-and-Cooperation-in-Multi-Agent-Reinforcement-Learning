@@ -140,6 +140,59 @@ def social_term(
     raise AssertionError("unreachable")
 
 
+def inequity_weights(
+    formulation: str,
+    z: torch.Tensor,
+    alpha: torch.Tensor,
+    beta: torch.Tensor,
+    aggregate: str = "mean",
+    weighting: str = "indicator",
+    standardize_dims: tuple[int, ...] = (0, 1),
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Weights of the inequity formulations for the advantage construction (``--imagined-critic other`` with sia / ia).
+
+    The coefficient of agent ``i``'s policy update is ``w_self[i] * A_i + sum_j w[i, j] * Ahat_ij``: the gradient of
+    the Fehr-Schmidt utility ``G_i - alpha/(N-1) sum_j max(G_j - G_i, 0) - beta/(N-1) sum_j max(G_i - G_j, 0)`` (ia), or of
+    ``G_i - alpha |G_i - mean_j G_j|`` (sia), with the derivative evaluated at the current levels ``z[..., i, j]``
+    (``i``'s estimate of how well off ``j`` is; diagonal = own level) instead of at the returns.
+
+    ``weighting="indicator"``: Fehr-Schmidt's piecewise-linear utility, ``g(d) = 1[d > 0]`` of the gap
+    ``d_ij = z_ii - z_ij`` (``> 0``: I am ahead of ``j``).  ``"relu"``: the quadratic utility, ``g(d) = relu(d~)`` with the
+    gap standardised over ``standardize_dims`` (the further ahead, the larger the weight; no flipping near equality).
+
+    ia:  ``w[i, j] = (beta g(d_ij) - alpha g(-d_ij)) / denom``,  sia: ``w[i, j] = alpha h(dbar_i) / denom`` with
+    ``dbar_i = z_ii - mean_j z_ij`` and ``h`` = sign (indicator) or the standardised gap (relu);  ``w_self = 1 - sum_j w[i, j]``
+    in both cases (what I give to your return I take from the weight of mine).  ``denom = N - 1`` (mean) or 1 (sum).
+    Returns ``(w_self: (..., N), w: (..., N, N) with a zero diagonal)``.
+    """
+    if formulation not in ("sia", "ia"):
+        raise ValueError("inequity_weights is for sia / ia (ei / svo have constant weights)")
+    if weighting not in ("indicator", "relu"):
+        raise ValueError("weighting must be indicator or relu")
+    z = z.detach()
+    N = z.shape[-1]
+    alpha = alpha.to(z.device)
+    beta = beta.to(z.device)
+    eye = torch.eye(N, dtype=torch.bool, device=z.device)
+    denom = (N - 1) if aggregate == "mean" else 1
+    z_self = z.diagonal(dim1=-2, dim2=-1)  # (..., N)
+    if formulation == "ia":
+        d = z_self.unsqueeze(-1) - z  # d[..., i, j] = z_ii - z_ij (> 0: I am ahead of j); zero on the diagonal
+        if weighting == "relu":
+            d = standardize(d, dims=standardize_dims)
+            g_ahead, g_behind = torch.relu(d), torch.relu(-d)
+        else:
+            g_ahead, g_behind = (d > 0).float(), (d < 0).float()
+        w = (beta.view(-1, 1) * g_ahead - alpha.view(-1, 1) * g_behind) / denom
+    else:  # sia
+        dbar = z_self - z.masked_fill(eye, 0.0).sum(dim=-1) / (N - 1)  # (..., N): my level minus the others' mean
+        h = standardize(dbar, dims=standardize_dims) if weighting == "relu" else torch.sign(dbar)
+        w = (alpha * h / denom).unsqueeze(-1).expand(z.shape).clone()
+    w = w.masked_fill(eye, 0.0)
+    w_self = 1.0 - w.sum(dim=-1)
+    return w_self, w
+
+
 class RewardSocialShaper:
     """``signal=reward``: intrinsic reward ``F_i(e)`` from the other agents' smoothed rewards.
 

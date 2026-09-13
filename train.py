@@ -65,7 +65,14 @@ from torch.utils.tensorboard import SummaryWriter
 
 from empathy_marl.agents import LSTMState, MultiAgents
 from empathy_marl.args import Args, resolve
-from empathy_marl.empathy import ImaginedRewardShaper, RewardSocialShaper, parse_per_agent, social_term, standardize
+from empathy_marl.empathy import (
+    ImaginedRewardShaper,
+    RewardSocialShaper,
+    inequity_weights,
+    parse_per_agent,
+    social_term,
+    standardize,
+)
 from empathy_marl.envs import is_prisoners_dilemma, make_envs
 from empathy_marl.metrics import MultiAgentEpisodeStatistics
 from empathy_marl.replay import RewardReplay
@@ -79,8 +86,12 @@ def make_run_name(args: Args) -> str:
         method = "none"
     elif args.signal == "imagined":
         method = f"{args.formulation}_imagined_{args.imagined_critic}"
-        if args.imagined_critic == "shaped" and args.imagined_level == "trace_value":
+        if args.imagined_level == "trace_value" and (
+            args.imagined_critic == "shaped" or (args.imagined_critic == "other" and args.formulation in ("sia", "ia"))
+        ):
             method += "_lv"  # level = trace + value
+        if args.imagined_critic in ("other", "none") and args.formulation in ("sia", "ia") and args.ia_weighting == "relu":
+            method += "_relu"
     else:
         method = f"{args.formulation}_{args.signal}"
     if args.social_scale and args.formulation != "none" and args.signal in ("value", "imagined"):
@@ -270,6 +281,8 @@ if __name__ == "__main__":
     imagined_shaped = use_imagined and args.formulation != "none" and args.imagined_critic == "shaped"
     # `level`: the report's coefficient term on "smoothed imagined rewards + w * gamma * V_i(o_j')" (no reward change)
     imagined_level = use_imagined and args.formulation != "none" and args.imagined_critic == "level"
+    # sia / ia through the advantage construction: weights of the imagined advantages from the current inequity
+    imagined_inequity = imagined_other and args.formulation in ("sia", "ia")
     print(f"env={args.env_id} agents={N} envs={E} obs={obs_shape} ({bundle.obs_type}) actions={bundle.single_action_space.n}")
     print(
         f"formulation={args.formulation} signal={args.signal} alpha={alpha.tolist()} beta={beta.tolist()} "
@@ -297,7 +310,7 @@ if __name__ == "__main__":
     )
     imagined_shaper = (
         ImaginedRewardShaper(args.formulation, alpha, beta, phi, args.gamma, args.reward_lambda, E, N, device, args.social_aggregate)
-        if imagined_shaped or imagined_level
+        if imagined_shaped or imagined_level or imagined_inequity
         else None
     )
     eye = torch.eye(N, dtype=torch.bool, device=device)
@@ -498,7 +511,22 @@ if __name__ == "__main__":
                 z = torch.where(eye, scaled_advantages.unsqueeze(-1).expand(-1, -1, -1, N), adv_cross)
                 if args.social_scale:
                     z = torch.where(eye, z, standardize(adv_cross, dims=(0, 1)))
-                social[:] = social_term(args.formulation, z, alpha, beta, phi, args.social_aggregate) if social_on else 0.0
+                if imagined_inequity:
+                    # levels "how well off is j": smoothed imagined rewards (+ w * gamma * V_i(o_j') for trace_value);
+                    # the Fehr-Schmidt / SIA derivative at these levels weighs my own and the others' imagined advantages
+                    value_level = None
+                    if args.imagined_level == "trace_value":
+                        value_level = args.level_value_weight * args.gamma * v_cross_next.reshape(T, E, N, N) * (1.0 - term_buf).unsqueeze(2)
+                    levels = torch.stack([
+                        imagined_shaper.update(rhat[t], dones[t], None if value_level is None else value_level[t]) for t in range(T)
+                    ])
+                    w_self, w_others = inequity_weights(
+                        args.formulation, levels, alpha, beta, args.social_aggregate, args.ia_weighting
+                    )
+                    # advantage_coef = scaled_advantages + social  ->  social = (w_self - 1) A_i + sum_j w_ij Ahat_ij
+                    social[:] = ((w_self - 1.0) * z.diagonal(dim1=-2, dim2=-1) + (w_others * z).sum(dim=-1)) if social_on else 0.0
+                else:
+                    social[:] = social_term(args.formulation, z, alpha, beta, phi, args.social_aggregate) if social_on else 0.0
             # signal=imagined, critic=level: X_i = F_i(z), z_ij = ehat_ij + w * gamma * V_i(o_j') (level in the coefficient,
             # the report's mechanism with the imagined rewards added; the traces advance step by step like the shaped path)
             if imagined_level:

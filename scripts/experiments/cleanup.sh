@@ -15,6 +15,10 @@
 #   EI  value (+ --social-scale)                the paper's original term alpha * V_i(o_j'), scaled
 #   SVO value, phi = 0 (+ --social-scale)       own-value control: alpha * V_i(o_i'), nobody else's state
 #   EI  reward                                  upper reference WITH access to the others' true rewards
+#   IA  imagined / other  (+ --social-scale)    inequity aversion through the advantage construction: the Fehr-Schmidt
+#                                               derivative at the current levels weighs my own and the others' imagined
+#                                               advantages (guilt-only rows 0:1, 0:0.5 are the ones with a mechanism)
+#   SIA imagined / other  (+ --social-scale)    the symmetric control
 #   IA  imagined / shaped                       inequity aversion on imagined smoothed rewards (Hughes et al. with
 #                                               imagined rewards): envy-heavy (Hughes' 5 / 0.05), guilt-heavy, symmetric
 #   IA  reward                                  Hughes et al. 2018 with true rewards (the published Clean Up method)
@@ -92,7 +96,8 @@ SHAPED_ALPHAS=${SHAPED_ALPHAS:-"0.03 0.1 0.3"}
 VALUE_ALPHAS=${VALUE_ALPHAS:-"0.5 1 2"}
 CONTROL_ALPHAS=${CONTROL_ALPHAS:-"1 2"}
 REWARD_ALPHAS=${REWARD_ALPHAS:-"0.03 0.1 0.3"}
-IA_PAIRS=${IA_PAIRS-"5:0.05 1:0.05 0.05:5 0.05:1 1:1"}     # alpha(envy):beta(guilt); 5:0.05 = Hughes et al. 2018
+IA_PAIRS=${IA_PAIRS-"5:0.05 1:0.05 0.05:5 0.05:1 1:1 0:1 0:0.5"}   # alpha(envy):beta(guilt); 5:0.05 = Hughes et al. 2018; 0:x = guilt only
+SIA_ALPHAS=${SIA_ALPHAS-"0.5 1"}                                 # symmetric inequity aversion, the control row
 IA_VALUE_PAIRS=${IA_VALUE_PAIRS-"1:0.1 2:0.2"}
 # LEVEL_VALUE=1 adds the `shaped + value level` rows (--imagined-level trace_value: the formulation is applied to the
 # smoothed imagined rewards PLUS my critic's forecast for the other, "what you earned lately + what you are about to earn")
@@ -139,6 +144,10 @@ make_grids() {
       # the paper's value term (scaled) and its own-value control
       $mg --signals value --alphas $VALUE_ALPHAS --formulations ei --extra "$extra --social-scale" >> "$g"
       $mg --signals value --alphas $CONTROL_ALPHAS --formulations svo --phis 0 --extra "$extra --social-scale" >> "$g"
+      # IA / SIA through the advantage construction (inequity-dependent weights on the imagined advantages, my critic as
+      # the others' value function); SIA is the symmetric control
+      [ -n "$IA_PAIRS" ] && $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
+      [ -n "$IA_PAIRS" ] && $mg --signals imagined --alphas $SIA_ALPHAS --formulations sia --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
       # IA: imagined (shaped) and on values (IA_PAIRS="" IA_VALUE_PAIRS="" -> EI only)
       [ -n "$IA_PAIRS" ] && $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped" >> "$g"
       [ -n "$IA_PAIRS" ] && [ "$LEVEL_VALUE" = 1 ] && $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped --imagined-level trace_value" >> "$g"

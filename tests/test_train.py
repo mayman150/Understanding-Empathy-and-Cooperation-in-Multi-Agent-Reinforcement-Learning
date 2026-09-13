@@ -163,7 +163,7 @@ def test_train_value_signal_with_social_scale(tmp_path):
 @pytest.mark.parametrize(
     "extra, message",
     [
-        (["--formulation", "sia", "--imagined-critic", "other"], "supports ei and svo"),
+        (["--formulation", "sia", "--imagined-critic", "none", "--imagined-level", "trace_value"], "needs the critic"),
         (["--formulation", "ei", "--imagined-critic", "other", "--recurrent", "--num-envs", "4", "--num-minibatches", "2"], "feed-forward"),
     ],
 )
@@ -247,10 +247,30 @@ def test_train_imagined_without_critic_ablation(tmp_path):
                             "--alpha", "1", "--imagined-warmup", "1", "--imagined-lambda", "0"], tmp_path)
     assert "iteration=3/3" in out
     assert len(glob.glob(str(tmp_path / "coin__ei_imagined_none_sc__*"))) == 1
-    cmd = [sys.executable, os.path.join(ROOT, "train.py"), "--run-dir", str(tmp_path), *COIN_FAST, "--signal", "imagined",
-           "--imagined-critic", "none", "--formulation", "sia", "--alpha", "1"]
-    res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=120)
-    assert res.returncode != 0 and "supports ei and svo" in res.stderr
+
+
+@pytest.mark.parametrize(
+    "extra, method",
+    [
+        (["--imagined-critic", "other", "--formulation", "ia", "--alpha", "0.1", "--beta", "1", "--social-scale"], "ia_imagined_other_sc"),
+        (["--imagined-critic", "other", "--formulation", "ia", "--alpha", "0.1", "--beta", "1", "--imagined-level", "trace_value",
+          "--ia-weighting", "relu"], "ia_imagined_other_lv_relu"),
+        (["--imagined-critic", "other", "--formulation", "sia", "--alpha", "1", "--social-scale"], "sia_imagined_other_sc"),
+        (["--imagined-critic", "none", "--formulation", "sia", "--alpha", "1"], "sia_imagined_none"),
+    ],
+)
+def test_train_inequity_through_the_advantage_construction(extra, method, tmp_path):
+    """sia / ia with imagined advantages: inequity-dependent weights on my own and the others' imagined advantages."""
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    out = _run(COIN_FAST + ["--signal", "imagined", "--imagined-warmup", "1", *extra], tmp_path)
+    assert "iteration=3/3" in out
+    run_dirs = glob.glob(str(tmp_path / f"coin__{method}__*"))
+    assert len(run_dirs) == 1, glob.glob(str(tmp_path / "*"))
+    acc = EventAccumulator(run_dirs[0], size_guidance={"scalars": 0})
+    acc.Reload()
+    term = [s.value for s in acc.Scalars("social/term_abs_mean/player_0")]
+    assert term[0] == 0.0 and any(v > 0.0 for v in term[1:])
 
 
 def test_cross_next_values_matches_full_pass_at_episode_boundaries():

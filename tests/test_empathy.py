@@ -124,3 +124,37 @@ def test_reward_signal_uses_the_same_functional_form_as_the_value_signal():
     )
     # none never adds anything
     assert torch.equal(_shaper("none", [1.0, 1.0], [0.0, 0.0])(torch.tensor([[4.0, 0.0]]), torch.zeros(1, 2)), torch.zeros(1, 2))
+
+
+def test_inequity_weights_move_weight_from_me_to_those_behind_me():
+    import torch
+
+    from empathy_marl.empathy import inequity_weights
+
+    # levels z[i, j]: agent 0 far ahead of both others, agent 1 behind everyone, agent 2 in between (one batch row)
+    z = torch.tensor([[[6.0, 1.0, 2.0], [6.0, 1.0, 2.0], [6.0, 1.0, 2.0]]]).unsqueeze(0)  # (1, 1, N, N): everyone sees the same levels
+    alpha, beta = torch.zeros(3), torch.ones(3)  # guilt only
+    w_self, w = inequity_weights("ia", z, alpha, beta, "mean", "indicator", standardize_dims=(0, 1))
+    w_self, w = w_self[0, 0], w[0, 0]
+    assert torch.allclose(w[0], torch.tensor([0.0, 0.5, 0.5])) and w_self[0].item() == pytest.approx(0.0)  # ahead of both
+    assert torch.allclose(w[1], torch.zeros(3)) and w_self[1].item() == pytest.approx(1.0)  # behind everyone: plain PPO
+    assert torch.allclose(w[2], torch.tensor([0.0, 0.5, 0.0])) and w_self[2].item() == pytest.approx(0.5)  # ahead of 1 only
+    # envy: the agent behind puts negative weight on those ahead and more on itself; weights always sum to one
+    alpha, beta = torch.ones(3), torch.zeros(3)
+    w_self, w = inequity_weights("ia", z, alpha, beta, "mean", "indicator", standardize_dims=(0, 1))
+    assert torch.allclose(w[0, 0, 1], torch.tensor([-0.5, 0.0, -0.5])) and w_self[0, 0, 1].item() == pytest.approx(2.0)
+    assert torch.allclose(w_self + w.sum(-1), torch.ones(1, 1, 3))
+    # sum aggregation: per-agent weight, not divided by N - 1
+    _, w_sum = inequity_weights("ia", z, alpha, beta, "sum", "indicator", standardize_dims=(0, 1))
+    assert torch.allclose(w_sum, 2 * w)
+    # SIA: symmetric, sign of my gap to the others' mean
+    alpha = torch.full((3,), 0.4)
+    w_self, w = inequity_weights("sia", z, alpha, torch.zeros(3), "mean", "indicator", standardize_dims=(0, 1))
+    assert torch.allclose(w[0, 0, 0], torch.tensor([0.0, 0.2, 0.2])) and w_self[0, 0, 0].item() == pytest.approx(0.6)  # ahead: help
+    assert torch.allclose(w[0, 0, 1], torch.tensor([-0.2, 0.0, -0.2])) and w_self[0, 0, 1].item() == pytest.approx(1.4)  # behind: hurt
+    # relu weighting: proportional to the standardised gap, zero for the agent in the middle of a symmetric batch
+    zb = torch.randn(64, 2, 3, 3)
+    w_self, w = inequity_weights("ia", zb, torch.zeros(3), torch.ones(3), "mean", "relu")
+    assert (w >= 0).all() and torch.allclose(w_self + w.sum(-1), torch.ones(64, 2, 3))
+    with pytest.raises(ValueError):
+        inequity_weights("ei", z, alpha, alpha)

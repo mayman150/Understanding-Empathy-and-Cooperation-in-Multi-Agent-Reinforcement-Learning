@@ -13,6 +13,7 @@ Signal = Literal["value", "reward", "imagined"]
 ImaginedCritic = Literal["other", "shaped", "none", "level"]
 SocialAggregate = Literal["mean", "sum"]
 ImaginedLevel = Literal["trace", "trace_value"]
+IAWeighting = Literal["indicator", "relu"]
 
 
 @dataclass
@@ -78,9 +79,14 @@ class Args:
     `level` = the report's coefficient term on the level "smoothed imagined rewards + weight * gamma * V_i(o_j')"
     (all formulations, feed-forward only; --level-value-weight as for --imagined-level trace_value)"""
     imagined_level: ImaginedLevel = "trace"
-    """signal=imagined/shaped: the level the formulation is applied to. `trace` = the smoothed imagined rewards (Hughes et
-    al. with imagined rewards); `trace_value` = the trace plus the agent's own critic on the other's next observation,
-    weight * gamma * V_i(o_j') ("what you earned lately plus what you are about to earn"; feed-forward only)"""
+    """signal=imagined: the level "how well off is agent j" used by shaped (the formulation is applied to it) and by the
+    inequity weights of other / none with sia / ia. `trace` = the smoothed imagined rewards (Hughes et al. with imagined
+    rewards); `trace_value` = the trace plus the agent's own critic on the other's next observation, weight * gamma *
+    V_i(o_j') ("what you earned lately plus what you are about to earn"; feed-forward only, not with critic none)"""
+    ia_weighting: IAWeighting = "indicator"
+    """signal=imagined, critic other / none, formulation sia / ia: how the current inequity sets the weights of the imagined
+    advantages. `indicator` = Fehr-Schmidt's piecewise-linear utility (who is ahead); `relu` = quadratic utility (the
+    standardised gap: the further ahead, the larger the weight)"""
     level_value_weight: Optional[float] = None
     """imagined_level=trace_value: weight of the value part; default (1 - gamma) / (1 - gamma * reward_lambda), which puts a
     constant reward stream on the same scale in the trace and in the value"""
@@ -151,22 +157,25 @@ def resolve(args: Args) -> Args:
     if args.imagined_critic not in IMAGINED_CRITICS:
         raise ValueError(f"--imagined-critic must be one of {IMAGINED_CRITICS}")
     if args.signal == "imagined" and args.imagined_critic in ("other", "none"):
-        if args.formulation in ("sia", "ia"):
-            raise ValueError(
-                f"--imagined-critic {args.imagined_critic} supports ei and svo only (gap formulations need outcome-level "
-                "quantities); use --imagined-critic shaped for sia / ia"
-            )
         if args.recurrent and args.imagined_critic == "other":
             raise ValueError("--imagined-critic other is implemented for feed-forward agents; use --imagined-critic shaped")
+        if args.recurrent and args.formulation in ("sia", "ia"):
+            raise ValueError("inequity weights for --imagined-critic none are implemented for feed-forward agents")
     if args.imagined_level not in ("trace", "trace_value"):
         raise ValueError("--imagined-level must be trace or trace_value")
     if args.imagined_level == "trace_value":
-        if not (args.signal == "imagined" and args.imagined_critic == "shaped" and args.formulation != "none"):
-            raise ValueError("--imagined-level trace_value applies to --signal imagined --imagined-critic shaped")
+        inequity_weights_use = args.imagined_critic in ("other", "none") and args.formulation in ("sia", "ia")
+        if not (args.signal == "imagined" and args.formulation != "none"
+                and (args.imagined_critic == "shaped" or inequity_weights_use)):
+            raise ValueError("--imagined-level trace_value applies to --imagined-critic shaped, or to other / none with sia / ia")
+        if args.imagined_critic == "none":
+            raise ValueError("--imagined-level trace_value needs the critic; use --imagined-critic other")
         if args.recurrent:
             raise ValueError("--imagined-level trace_value is implemented for feed-forward agents")
     if args.signal == "imagined" and args.imagined_critic == "level" and args.recurrent:
         raise ValueError("--imagined-critic level is implemented for feed-forward agents")
+    if args.ia_weighting not in ("indicator", "relu"):
+        raise ValueError("--ia-weighting must be indicator or relu")
     if args.level_value_weight is None and (
         args.imagined_level == "trace_value" or (args.signal == "imagined" and args.imagined_critic == "level")
     ):
