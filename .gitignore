@@ -12,3 +12,5 @@ models/
 *.pt
 grids/
 slurm_logs/
+# working notes (kept local)
+docs/value_signal_analysis.md
