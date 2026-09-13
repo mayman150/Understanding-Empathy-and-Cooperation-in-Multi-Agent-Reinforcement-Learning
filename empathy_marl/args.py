@@ -12,6 +12,7 @@ Formulation = Literal["none", "ei", "svo", "sia", "ia"]
 Signal = Literal["value", "reward", "imagined"]
 ImaginedCritic = Literal["other", "shaped", "none"]
 SocialAggregate = Literal["mean", "sum"]
+ImaginedLevel = Literal["trace", "trace_value"]
 
 
 @dataclass
@@ -74,6 +75,13 @@ class Args:
     critic on the other's observations as the other's value function (feed-forward only); `shaped` = imagined rewards
     through the intrinsic-reward path of signal=reward (all formulations, recurrent ok); `none` = ablation of `other`
     without any critic: the other's lambda-discounted sum of imagined rewards (no baseline, no bootstrap), EI/SVO"""
+    imagined_level: ImaginedLevel = "trace"
+    """signal=imagined/shaped: the level the formulation is applied to. `trace` = the smoothed imagined rewards (Hughes et
+    al. with imagined rewards); `trace_value` = the trace plus the agent's own critic on the other's next observation,
+    weight * gamma * V_i(o_j') ("what you earned lately plus what you are about to earn"; feed-forward only)"""
+    level_value_weight: Optional[float] = None
+    """imagined_level=trace_value: weight of the value part; default (1 - gamma) / (1 - gamma * reward_lambda), which puts a
+    constant reward stream on the same scale in the trace and in the value"""
     imagined_warmup: int = 20
     """signal=imagined: iterations during which the reward model trains but the social term is off"""
     imagined_lambda: Optional[float] = None
@@ -148,6 +156,15 @@ def resolve(args: Args) -> Args:
             )
         if args.recurrent and args.imagined_critic == "other":
             raise ValueError("--imagined-critic other is implemented for feed-forward agents; use --imagined-critic shaped")
+    if args.imagined_level not in ("trace", "trace_value"):
+        raise ValueError("--imagined-level must be trace or trace_value")
+    if args.imagined_level == "trace_value":
+        if not (args.signal == "imagined" and args.imagined_critic == "shaped" and args.formulation != "none"):
+            raise ValueError("--imagined-level trace_value applies to --signal imagined --imagined-critic shaped")
+        if args.recurrent:
+            raise ValueError("--imagined-level trace_value is implemented for feed-forward agents")
+        if args.level_value_weight is None:
+            args.level_value_weight = (1.0 - args.gamma) / (1.0 - args.gamma * args.reward_lambda)
     if args.imagined_warmup < 0 or args.reward_model_coef < 0 or args.reward_model_replay < 0:
         raise ValueError("--imagined-warmup, --reward-model-coef and --reward-model-replay must be >= 0")
     if args.social_aggregate not in ("mean", "sum"):

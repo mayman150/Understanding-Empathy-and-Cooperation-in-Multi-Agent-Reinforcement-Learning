@@ -79,6 +79,8 @@ def make_run_name(args: Args) -> str:
         method = "none"
     elif args.signal == "imagined":
         method = f"{args.formulation}_imagined_{args.imagined_critic}"
+        if args.imagined_critic == "shaped" and args.imagined_level == "trace_value":
+            method += "_lv"  # level = trace + value
     else:
         method = f"{args.formulation}_{args.signal}"
     if args.social_scale and args.formulation != "none" and args.signal in ("value", "imagined"):
@@ -439,8 +441,12 @@ if __name__ == "__main__":
                 rhat = torch.where(eye, env_rewards.unsqueeze(-1).expand(-1, -1, -1, N), rhat)  # diagonal: own true reward
             if imagined_shaped:  # the reward signal with imagined rewards: intrinsic reward, enters the return
                 with torch.no_grad():
+                    value_level = None
+                    if args.imagined_level == "trace_value":  # + weight * gamma * V_i(o_j'), my critic on everyone's next obs
+                        v_next, _ = agents.cross_values(next_obs_buf.reshape((T * E, N) + obs_shape))
+                        value_level = args.level_value_weight * args.gamma * v_next.reshape(T, E, N, N) * (1.0 - term_buf).unsqueeze(2)
                     for t in range(T):
-                        intrinsic = imagined_shaper(rhat[t], dones[t])
+                        intrinsic = imagined_shaper(rhat[t], dones[t], None if value_level is None else value_level[t])
                         if social_on:
                             social[t] = intrinsic
                             rewards[t] = rewards[t] + intrinsic

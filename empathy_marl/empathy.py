@@ -208,9 +208,18 @@ class ImaginedRewardShaper:
         self.num_agents = num_agents
         self.e = torch.zeros(num_envs, num_agents, num_agents, device=device)
 
-    def __call__(self, imagined: torch.Tensor, episode_start: torch.Tensor) -> torch.Tensor:
+    def __call__(
+        self, imagined: torch.Tensor, episode_start: torch.Tensor, value_level: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """``imagined: (num_envs, N, N)`` (``[e, i, j]`` = i's estimate of j's reward this step, diagonal = own true
-        reward), ``episode_start: (num_envs, N)`` for the observed agents -> intrinsic reward ``(num_envs, N)``."""
+        reward), ``episode_start: (num_envs, N)`` for the observed agents -> intrinsic reward ``(num_envs, N)``.
+
+        ``value_level`` (optional, ``(num_envs, N, N)``): a forecast to add to the smoothed trace before the
+        formulation is applied, ``z[e, i, j] = ehat_ij + value_level[e, i, j]`` ("what j earned lately plus what j is
+        about to earn", the ``trace_value`` level of ``--imagined-level``; the caller supplies
+        ``weight * gamma * V_i(o_j')``).  The trace itself is unaffected.
+        """
         reset = (1.0 - episode_start).unsqueeze(1)  # (E, 1, N): the trace of observed agent j restarts with j's episode
         self.e = self.decay * self.e * reset + imagined
-        return social_term(self.formulation, self.e, self.alpha, self.beta, self.phi, self.aggregate)
+        level = self.e if value_level is None else self.e + value_level
+        return social_term(self.formulation, level, self.alpha, self.beta, self.phi, self.aggregate)

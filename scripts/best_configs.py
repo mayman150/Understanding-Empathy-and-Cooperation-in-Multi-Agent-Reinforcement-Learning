@@ -64,6 +64,8 @@ def method_of(args: dict) -> str:
     method = f"{args['formulation']}_{args['signal']}"
     if args["signal"] == "imagined":
         method += f"_{args.get('imagined_critic', 'other')}"
+        if args.get("imagined_level", "trace") != "trace":
+            method += "_lv"
     if args.get("social_scale") and args["signal"] in ("value", "imagined"):
         method += "_sc"
     # SVO with phi = 0 has no other-regarding part (alpha * V_i(o_i) for the value signal, a rescaled own advantage
@@ -169,6 +171,8 @@ def main() -> None:
                     conf += f" --reward-model-replay {args['reward_model_replay']}"
                 if args.get("imagined_lambda") is not None:
                     conf += f" --imagined-lambda {fmt(args['imagined_lambda'])}"
+                if args.get("imagined_level", "trace") != "trace":
+                    conf += f" --imagined-level {args['imagined_level']}"
             if args.get("social_scale"):
                 conf += " --social-scale"
             if args.get("social_aggregate", "mean") != "mean":

@@ -162,3 +162,26 @@ def test_coin_game_steal_gives_the_victim_minus_two_from_the_observers_seat():
     assert rew["player_1"] == -2.0 and rew["player_0"] == 1.0
     # from blue's seat: its own-colour coin (plane 2) disappeared and the other agent (plane 1) moved onto its cell
     assert before.reshape(4, 3, 3)[2].sum() == 1.0 and after.reshape(4, 3, 3)[2].sum() == 0.0
+
+
+def test_imagined_shaper_value_level_adds_the_forecast_to_the_trace():
+    """`trace_value`: the formulation is applied to ehat + value_level; the trace itself is unchanged."""
+    torch.manual_seed(0)
+    E, N = 2, 3
+    alpha, beta, phi = torch.ones(N), torch.full((N,), 0.5), torch.zeros(N)
+    plain = ImaginedRewardShaper("ia", alpha, beta, phi, 0.99, 0.975, E, N, torch.device("cpu"))
+    with_v = ImaginedRewardShaper("ia", alpha, beta, phi, 0.99, 0.975, E, N, torch.device("cpu"))
+    start = torch.zeros(E, N)
+    for _ in range(5):
+        imagined = torch.randn(E, N, N)
+        level = torch.randn(E, N, N)
+        f_plain = plain(imagined, start)
+        f_v = with_v(imagined, start, level)
+        assert torch.equal(plain.e, with_v.e)  # same trace
+        assert not torch.allclose(f_plain, f_v)
+        # equals applying IA to (trace + level) directly
+        from empathy_marl.empathy import social_term
+
+        assert torch.allclose(f_v, social_term("ia", with_v.e + level, alpha, beta, phi), atol=1e-6)
+    # a zero level reproduces the plain shaper
+    assert torch.allclose(with_v(imagined, start, torch.zeros(E, N, N)), plain(imagined, start), atol=1e-6)

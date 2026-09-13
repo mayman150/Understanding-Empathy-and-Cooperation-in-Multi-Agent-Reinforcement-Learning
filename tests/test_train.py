@@ -1,5 +1,6 @@
 """End-to-end smoke tests of ``train.py`` plus a unit test of the next-state cross values."""
 import glob
+import json
 import os
 import subprocess
 import sys
@@ -273,3 +274,26 @@ def test_cross_next_values_matches_full_pass_at_episode_boundaries():
         fast = cross_next_values(agents, v_cross, next_obs_buf, episode_end)
         full, _ = agents.cross_values(next_obs_buf.reshape(T * E, N, 5))
     assert torch.allclose(fast, full.reshape(T, E, N, N), atol=1e-6)
+
+
+def test_train_shaped_with_value_level(tmp_path):
+    """--imagined-level trace_value: IA / EI on 'recent imagined earnings + my critic on the other's next observation'."""
+    out = _run(COIN_FAST + ["--signal", "imagined", "--imagined-critic", "shaped", "--imagined-level", "trace_value",
+                            "--formulation", "ia", "--alpha", "1", "--beta", "0.1", "--imagined-warmup", "1"], tmp_path)
+    assert "iteration=3/3" in out
+    run_dirs = glob.glob(str(tmp_path / "coin__ia_imagined_shaped_lv__*"))
+    assert len(run_dirs) == 1
+    with open(os.path.join(run_dirs[0], "args.json")) as f:
+        args = json.load(f)
+    assert args["imagined_level"] == "trace_value"
+    assert args["level_value_weight"] == pytest.approx((1 - 0.99) / (1 - 0.99 * 0.975))
+    for extra, message in [
+        (["--signal", "imagined", "--imagined-critic", "other", "--formulation", "ei", "--alpha", "1"], "applies to"),
+        (["--signal", "value", "--formulation", "ei", "--alpha", "1"], "applies to"),
+        (["--signal", "imagined", "--imagined-critic", "shaped", "--formulation", "ei", "--alpha", "1", "--recurrent",
+          "--num-envs", "4", "--num-minibatches", "2"], "feed-forward"),
+    ]:
+        cmd = [sys.executable, os.path.join(ROOT, "train.py"), "--run-dir", str(tmp_path), *COIN_FAST,
+               "--imagined-level", "trace_value", *extra]
+        res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=120)
+        assert res.returncode != 0 and message in res.stderr
