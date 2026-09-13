@@ -34,7 +34,8 @@ import math
 import os
 from fractions import Fraction
 
-PHIS = {"pi/2": math.pi / 2, "pi/3": math.pi / 3, "pi/4": math.pi / 4, "pi/6": math.pi / 6}
+PHIS = {"pi/2": math.pi / 2, "pi/3": math.pi / 3, "pi/4": math.pi / 4, "pi/6": math.pi / 6}  # the report's SVO angles
+ALL_PHIS = {**PHIS, "0": 0.0}  # "0": SVO with no other-regarding term = the own-value control
 BETA_RATIOS = [Fraction(1, 2), Fraction(1, 3), Fraction(1, 10)]
 REPORT_ALPHAS = [0.0, 0.003, 0.01, 0.03, 0.1, 0.3]
 
@@ -72,7 +73,7 @@ def build_grid(args: argparse.Namespace) -> list[str]:
                     for name in args.phis:
                         lines.append(
                             f"{common} --formulation svo --signal {signal} --alpha {alpha_arg(a)} "
-                            f"--phi {fmt(PHIS[name])} --seed {seed}"
+                            f"--phi {fmt(ALL_PHIS[name])} --seed {seed}"
                         )
                 if "ia" in args.formulations:
                     for ratio in args.beta_ratios:
@@ -87,7 +88,7 @@ def build_grid(args: argparse.Namespace) -> list[str]:
 
 def latex_table(args: argparse.Namespace) -> str:
     alphas = ", ".join(fmt(a) for a in args.alphas)
-    phis = ", ".join(rf"\frac{{\pi}}{{{name.split('/')[1]}}}" for name in args.phis)
+    phis = ", ".join("0" if name == "0" else rf"\frac{{\pi}}{{{name.split('/')[1]}}}" for name in args.phis)
     betas = ", ".join(rf"\frac{{\alpha}}{{{r.denominator}}}" if r.numerator == 1 else rf"{r}\alpha" for r in args.beta_ratios)
     signals = " / ".join(args.signals)
     rows = []
@@ -121,9 +122,10 @@ def main() -> None:
     p.add_argument("--max-cycles", type=int, default=100)
     p.add_argument("--total-timesteps", type=int, default=5_000_000)
     p.add_argument("--formulations", nargs="+", default=["none", "ei", "sia", "svo", "ia"])
-    p.add_argument("--signals", nargs="+", default=["value", "reward"], choices=["value", "reward"])
+    p.add_argument("--signals", nargs="+", default=["value", "reward"], choices=["value", "reward", "imagined"])
     p.add_argument("--alphas", nargs="+", type=float, default=REPORT_ALPHAS)
-    p.add_argument("--phis", nargs="+", default=list(PHIS), choices=list(PHIS))
+    p.add_argument("--phis", nargs="+", default=list(PHIS), choices=list(ALL_PHIS),
+                   help="SVO angles; \"0\" is the own-value control (no other-regarding term)")
     p.add_argument("--beta-ratios", nargs="+", type=Fraction, default=BETA_RATIOS, help="beta = ratio * alpha")
     p.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3])
     p.add_argument("--mixed", default="", help='per-agent alpha template, e.g. "0,{a}" ({a} = grid alpha)')

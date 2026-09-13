@@ -24,6 +24,14 @@ terms in :mod:`empathy_marl.empathy` are built from.  For recurrent critics, age
 imagines *having seen agent j's observation history*, so a separate hidden state is
 kept for every ``(i, j)`` pair: ``cross_state[h|c]: (N, num_layers, num_sequences * N, hidden)``
 laid out as ``sequence-major, observed-agent-minor``.
+
+``--signal imagined`` adds a per-agent **reward model** ``f_i(o, a, o')`` (``reward_model=True``):
+a regression of the agent's *own* reward on its own observation transition.  Applied to
+another agent's transition, ``f_i(o_j, a_j, o_j')`` is agent ``i``'s imagined reward of agent ``j``
+("what I would have received in your shoes"); ``MultiAgents.cross_rewards`` computes it for
+all pairs.  For vector observations the model is a small MLP on the raw ``(o, o')`` pair; for
+images it is a head on the (detached) trunk features of both frames, so it never trains
+the trunk.
 """
 from __future__ import annotations
 
@@ -88,6 +96,43 @@ class MLP(nn.Module):
         return self.net(x.float())
 
 
+class RewardModel(nn.Module):
+    """``rhat = f(o, a, o')``: the reward an agent receives for taking ``a`` in ``o`` and arriving in ``o'``.
+
+    Trained on the agent's own transitions only; evaluated on other agents' transitions (their
+    observation, their action, their next observation) to imagine their rewards.  The action is
+    part of the input because an egocentric frame does not always identify the agent's own move
+    (on the Coin Game's 3x3 torus "I stepped onto my coin" and "the other stepped onto my coin
+    while I stepped away" can produce the same before/after pictures).  ``features`` is ``None``
+    for vector observations (MLP on the raw pair) or the agent's trunk for images (head on the
+    *detached* features of both frames).
+    """
+
+    def __init__(self, obs_shape: tuple[int, ...], num_actions: int, features: Optional[nn.Module], hidden: int = 64):
+        super().__init__()
+        # plain attribute on purpose (bypasses nn.Module registration): the trunk belongs to the Agent, so it must
+        # not appear a second time in this module's parameters / state_dict
+        object.__setattr__(self, "_features", features)
+        self.num_actions = int(num_actions)
+        n_in = 2 * (features.out_features if features is not None else int(np.prod(obs_shape))) + self.num_actions
+        layers = [layer_init(nn.Linear(n_in, hidden)), nn.Tanh()]
+        if features is None:
+            layers += [layer_init(nn.Linear(hidden, hidden)), nn.Tanh()]
+        layers += [layer_init(nn.Linear(hidden, 1), std=1.0)]
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor, action: torch.Tensor, x_next: torch.Tensor) -> torch.Tensor:
+        """``x, x_next: (B, *obs)``, ``action: (B,)`` integer -> ``(B,)``."""
+        a = torch.nn.functional.one_hot(action.long(), self.num_actions).float()
+        if self._features is None:
+            z = torch.cat([x.flatten(1).float(), a, x_next.flatten(1).float()], dim=-1)
+        else:
+            with torch.no_grad():
+                h, h_next = self._features(x), self._features(x_next)
+            z = torch.cat([h, a, h_next], dim=-1)
+        return self.net(z).squeeze(-1)
+
+
 class Agent(nn.Module):
     def __init__(
         self,
@@ -96,6 +141,7 @@ class Agent(nn.Module):
         obs_type: str,
         recurrent: bool = False,
         lstm_hidden_size: int = 128,
+        reward_model: bool = False,
     ):
         super().__init__()
         if obs_type == "image":
@@ -116,6 +162,17 @@ class Agent(nn.Module):
             head_in = lstm_hidden_size
         self.actor = layer_init(nn.Linear(head_in, int(action_space.n)), std=0.01)
         self.critic = layer_init(nn.Linear(head_in, 1), std=1)
+        self.reward_model: Optional[RewardModel] = (
+            RewardModel(observation_space.shape, int(action_space.n), self.trunk if obs_type == "image" else None)
+            if reward_model
+            else None
+        )
+
+    def predict_reward(self, x: torch.Tensor, action: torch.Tensor, x_next: torch.Tensor) -> torch.Tensor:
+        """Imagined reward for the transition ``(x, action) -> x_next`` (``x, x_next: (B, *obs)``, ``action: (B,)``)."""
+        if self.reward_model is None:
+            raise RuntimeError("this agent has no reward model (construct with reward_model=True)")
+        return self.reward_model(x, action, x_next)
 
     def get_states(
         self, x: torch.Tensor, lstm_state: Optional[LSTMState], done: Optional[torch.Tensor]
@@ -174,14 +231,36 @@ class MultiAgents(nn.Module):
         obs_type: str,
         recurrent: bool = False,
         lstm_hidden_size: int = 128,
+        reward_model: bool = False,
     ):
         super().__init__()
         self.num_agents = num_agents
         self.recurrent = recurrent
         self.lstm_hidden_size = lstm_hidden_size
         self.agents = nn.ModuleList(
-            Agent(observation_space, action_space, obs_type, recurrent, lstm_hidden_size) for _ in range(num_agents)
+            Agent(observation_space, action_space, obs_type, recurrent, lstm_hidden_size, reward_model)
+            for _ in range(num_agents)
         )
+
+    # ----------------------------------------------------------------- imagined rewards
+    def predict_own_rewards(self, x: torch.Tensor, action: torch.Tensor, x_next: torch.Tensor) -> torch.Tensor:
+        """``x, x_next: (M, N, *obs)``, ``action: (M, N)`` -> ``(M, N)`` with ``[m, i] = f_i(x[m, i], a[m, i], x_next[m, i])``
+        (differentiable: this is the reward-model training target)."""
+        return torch.stack(
+            [agent.predict_reward(x[:, i], action[:, i], x_next[:, i]) for i, agent in enumerate(self.agents)], dim=1
+        )
+
+    def cross_rewards(self, x: torch.Tensor, action: torch.Tensor, x_next: torch.Tensor) -> torch.Tensor:
+        """Every agent's reward model on every agent's transition.
+
+        ``x, x_next: (M, N, *obs)``, ``action: (M, N)`` -> ``(M, N, N)`` with
+        ``[m, i, j] = f_i(x[m, j], a[m, j], x_next[m, j])``: agent ``i``'s imagined reward of agent ``j``.
+        """
+        M, N = x.shape[0], x.shape[1]
+        flat_x = x.reshape((M * N,) + x.shape[2:])
+        flat_a = action.reshape(M * N)
+        flat_next = x_next.reshape((M * N,) + x_next.shape[2:])
+        return torch.stack([agent.predict_reward(flat_x, flat_a, flat_next).reshape(M, N) for agent in self.agents], dim=1)
 
     @property
     def num_lstm_layers(self) -> int:

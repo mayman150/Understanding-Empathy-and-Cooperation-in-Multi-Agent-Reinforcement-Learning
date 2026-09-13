@@ -40,7 +40,7 @@ from plot_curves import RUN_RE, bin_curve  # noqa: E402
 
 FORMULATION_NAMES = {"ei": "EI", "sia": "SIA", "svo": "SVO", "ia": "IA"}
 FORMULATION_COLOURS = {"ei": "#1f77b4", "sia": "#ff7f0e", "svo": "#2ca02c", "ia": "#d62728"}
-SIGNAL_STYLES = {"value": "-", "reward": "--"}
+SIGNAL_STYLES = {"value": "-", "reward": "--", "imagined_other": "-.", "imagined_shaped": ":"}
 REFERENCE_STYLES = {"none": ("#555555", ":"), "control": ("#999999", "-.")}
 DEFAULT_METRICS = ["charts/collective_return", "charts/cooperation_rate"]
 # two-sided Student t critical values for 95% (index = degrees of freedom); beyond 30 the normal value is used
@@ -76,9 +76,11 @@ def method_of(args: dict) -> tuple[str, str, str]:
     f, s = args["formulation"], args["signal"]
     if f == "none":
         return "none", "plain PPO", "none"
+    signal = s if s != "imagined" else f"imagined/{args.get('imagined_critic', 'other')}"
+    suffix = " (scaled)" if args.get("social_scale") and s in ("value", "imagined") else ""
     if f == "svo" and all(float(v) == 0.0 for v in str(args["phi"]).split(",")):
-        return "control", "own-value control (SVO, phi=0)", "control"
-    return f"{f}_{s}", f"{FORMULATION_NAMES[f]}, {s} signal", "method"
+        return f"control_{signal.replace('/', '_')}", f"own-value control (SVO phi=0, {signal} signal{suffix})", "control"
+    return f"{f}_{signal.replace('/', '_')}", f"{FORMULATION_NAMES[f]}, {signal} signal{suffix}", "method"
 
 
 def load_run(run_dir: str, metrics: list[str]) -> dict:
@@ -134,8 +136,9 @@ def main() -> None:
     methods: dict[str, dict] = {}  # key -> {"label", "kind", "formulation", "signal", "runs": [...], "configs": set()}
     for run in loaded:
         key, label, kind = method_of(run["args"])
+        signal_key = key.split("_", 1)[1] if kind == "method" else key  # e.g. "value", "reward", "imagined_other"
         m = methods.setdefault(key, {"label": label, "kind": kind, "formulation": run["args"]["formulation"],
-                                     "signal": run["args"]["signal"], "runs": [], "configs": set()})
+                                     "signal": run["args"]["signal"], "signal_key": signal_key, "runs": [], "configs": set()})
         m["runs"].append(run)
         m["configs"].add(json.dumps({k: v for k, v in run["args"].items() if k not in ("seed", "run_dir", "exp_name")}, sort_keys=True))
     for key, m in methods.items():
@@ -217,11 +220,21 @@ def main() -> None:
         ax.fill_between(centers[ok], (mean - half)[ok], (mean + half)[ok], color=colour, alpha=0.15, linewidth=0)
         return True
 
+    control_keys = sorted(k for k, m in methods.items() if m["kind"] == "control")
+    control_greys = ["#999999", "#777777", "#bbbbbb", "#555555"]
+
     def draw_references(ax, metric):
         for ref in a.reference:
-            if ref in methods:
-                colour, style = REFERENCE_STYLES[ref]
-                draw(ax, ref, metric, colour, style)
+            if ref == "none" and "none" in methods:
+                draw(ax, "none", metric, *REFERENCE_STYLES["none"])
+            if ref == "control":
+                for k, key in enumerate(control_keys):
+                    draw(ax, key, metric, control_greys[k % len(control_greys)], REFERENCE_STYLES["control"][1])
+
+    # line style per signal (the same formulation keeps its colour across signals)
+    signals = sorted({m["signal_key"] for m in methods.values() if m["kind"] == "method"})
+    style_cycle = ["-", "--", "-.", ":"]
+    signal_styles = {s: SIGNAL_STYLES.get(s, style_cycle[k % len(style_cycle)]) for k, s in enumerate(signals)}
 
     def finish(fig, ax, metric, title, name):
         ax.set_title(title, fontsize=10)
@@ -240,25 +253,25 @@ def main() -> None:
     for metric in a.metrics:
         safe = metric.replace("/", "_")
         pretty = metric.split("/")[-1].replace("_", " ")
-        # value vs. reward, one figure per formulation
+        # one formulation, all signals (value vs. reward vs. imagined)
         for f in formulations:
             fig, ax = plt.subplots(figsize=(7, 4.2))
             drawn = 0
-            for signal, style in SIGNAL_STYLES.items():
+            for signal, style in signal_styles.items():
                 drawn += draw(ax, f"{f}_{signal}", metric, FORMULATION_COLOURS[f], style)
             if drawn:
                 draw_references(ax, metric)
-                finish(fig, ax, metric, f"{pretty}: {FORMULATION_NAMES[f]} with the value signal vs. the reward signal", f"{safe}__{f}.png")
+                finish(fig, ax, metric, f"{pretty}: {FORMULATION_NAMES[f]} across signals", f"{safe}__{f}.png")
                 n_fig += 1
             else:
                 plt.close(fig)
         # one signal, all formulations
-        for signal in SIGNAL_STYLES:
+        for signal in signal_styles:
             fig, ax = plt.subplots(figsize=(7, 4.2))
             drawn = sum(draw(ax, f"{f}_{signal}", metric, FORMULATION_COLOURS[f], "-") for f in formulations)
             if drawn:
                 draw_references(ax, metric)
-                finish(fig, ax, metric, f"{pretty}: all formulations, {signal} signal", f"{safe}__{signal}.png")
+                finish(fig, ax, metric, f"{pretty}: all formulations, {signal.replace('_', '/')} signal", f"{safe}__{signal}.png")
                 n_fig += 1
             else:
                 plt.close(fig)
@@ -266,11 +279,12 @@ def main() -> None:
         fig, ax = plt.subplots(figsize=(8, 4.8))
         drawn = 0
         for f in formulations:
-            for signal, style in SIGNAL_STYLES.items():
+            for signal, style in signal_styles.items():
                 drawn += draw(ax, f"{f}_{signal}", metric, FORMULATION_COLOURS[f], style)
         if drawn:
             draw_references(ax, metric)
-            finish(fig, ax, metric, f"{pretty}: all formulations (solid = value signal, dashed = reward signal)", f"{safe}__all.png")
+            legend = ", ".join(f"{sty} = {sig.replace('_', '/')}" for sig, sty in signal_styles.items())
+            finish(fig, ax, metric, f"{pretty}: all formulations ({legend})", f"{safe}__all.png")
             n_fig += 1
         else:
             plt.close(fig)

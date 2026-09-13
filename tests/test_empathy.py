@@ -34,7 +34,7 @@ def test_parse_per_agent_broadcast_and_list():
 def test_none_has_zero_social_term_and_constants_are_complete():
     assert torch.equal(social_term("none", V, ONES, ONES, ONES), ZEROS)
     assert FORMULATIONS == ("none", "ei", "svo", "sia", "ia")
-    assert SIGNALS == ("value", "reward")
+    assert SIGNALS == ("value", "reward", "imagined")
     with pytest.raises(ValueError):
         social_term("reward_ia", V, ONES, ONES, ONES)
 

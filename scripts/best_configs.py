@@ -62,7 +62,12 @@ def method_of(args: dict) -> str:
     if args["formulation"] == "none":
         return "none"
     method = f"{args['formulation']}_{args['signal']}"
-    # SVO with phi = 0 is alpha * V_i(o_i): an own-value bonus with no other-regarding part -> the control, ranked separately
+    if args["signal"] == "imagined":
+        method += f"_{args.get('imagined_critic', 'other')}"
+    if args.get("social_scale") and args["signal"] in ("value", "imagined"):
+        method += "_sc"
+    # SVO with phi = 0 has no other-regarding part (alpha * V_i(o_i) for the value signal, a rescaled own advantage
+    # for imagined/other) -> the control, ranked separately
     if args["formulation"] == "svo" and all(float(v) == 0.0 for v in str(args["phi"]).split(",")):
         method += "_phi0_control"
     return method
@@ -156,6 +161,10 @@ def main() -> None:
                 conf += f" --beta {args['beta']}"
             if args["formulation"] == "svo":
                 conf += f" --phi {args['phi']}"
+            if args["signal"] == "imagined":
+                conf += f" --imagined-critic {args.get('imagined_critic', 'other')} --imagined-warmup {args.get('imagined_warmup', 20)}"
+            if args.get("social_scale"):
+                conf += " --social-scale"
         print(f"# {method}: {a.metric} = {r[a.metric][0]:.2f} +/- {r[a.metric][1]:.2f} (n={r['n']})")
         print(f'TAG=coin_best FINAL_SEEDS=7-14 STEPS={args["total_timesteps"]} TIME=01:00:00 TRAIN_ARGS="{train_args}" \\\n'
               f"    scripts/experiments/coin.sh final {conf}")

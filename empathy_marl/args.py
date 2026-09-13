@@ -6,10 +6,11 @@ import sys
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-from empathy_marl.empathy import FORMULATIONS, SIGNALS
+from empathy_marl.empathy import FORMULATIONS, IMAGINED_CRITICS, SIGNALS
 
 Formulation = Literal["none", "ei", "svo", "sia", "ia"]
-Signal = Literal["value", "reward"]
+Signal = Literal["value", "reward", "imagined"]
+ImaginedCritic = Literal["other", "shaped"]
 
 
 @dataclass
@@ -57,7 +58,19 @@ class Args:
     """functional form of the social term: none (plain PPO) | ei | svo | sia | ia"""
     signal: Signal = "value"
     """value: X_i from the agent's OWN critic on others' observations, added to the advantage (our proposal);
-    reward: intrinsic reward from the others' smoothed rewards (literature baseline, needs reward access)"""
+    reward: intrinsic reward from the others' smoothed rewards (literature baseline, needs reward access);
+    imagined: the others' rewards imagined with the agent's OWN reward model f_i(o_j, a_j, o_j') (no reward access)"""
+    imagined_critic: ImaginedCritic = "other"
+    """signal=imagined: `other` = EI/SVO on the GAE advantage of the other's imagined rewards, with the agent's own
+    critic on the other's observations as the other's value function (feed-forward only); `shaped` = imagined rewards
+    through the intrinsic-reward path of signal=reward (all formulations, recurrent ok)"""
+    imagined_warmup: int = 20
+    """signal=imagined: iterations during which the reward model trains but the social term is off"""
+    reward_model_coef: float = 1.0
+    """signal=imagined: weight of the reward-model regression loss (own transitions -> own reward)"""
+    social_scale: bool = False
+    """standardise the own advantage and every z[i, j] over the batch before the social term is formed, so that
+    alpha is a weight relative to the agent's own advantage (signal=value and signal=imagined/other)"""
     alpha: str = "0.0"
     """strength of the social term; one value for all agents or N comma-separated per-agent values"""
     beta: str = "0.0"
@@ -105,6 +118,18 @@ def resolve(args: Args) -> Args:
         raise ValueError(f"--formulation must be one of {FORMULATIONS}")
     if args.signal not in SIGNALS:
         raise ValueError(f"--signal must be one of {SIGNALS}")
+    if args.imagined_critic not in IMAGINED_CRITICS:
+        raise ValueError(f"--imagined-critic must be one of {IMAGINED_CRITICS}")
+    if args.signal == "imagined" and args.imagined_critic == "other":
+        if args.formulation in ("sia", "ia"):
+            raise ValueError(
+                "--imagined-critic other supports ei and svo only (gap formulations need outcome-level "
+                "quantities); use --imagined-critic shaped for sia / ia"
+            )
+        if args.recurrent:
+            raise ValueError("--imagined-critic other is implemented for feed-forward agents; use --imagined-critic shaped")
+    if args.imagined_warmup < 0 or args.reward_model_coef < 0:
+        raise ValueError("--imagined-warmup and --reward-model-coef must be >= 0")
     if args.num_envs < 1 or args.num_steps < 1 or args.num_minibatches < 1:
         raise ValueError("num_envs, num_steps and num_minibatches must be >= 1")
     if args.num_agents < 2:

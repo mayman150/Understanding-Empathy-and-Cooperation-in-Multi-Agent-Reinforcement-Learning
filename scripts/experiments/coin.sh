@@ -22,6 +22,12 @@
 #   STEPS=2000000 TIME=01:00:00 scripts/experiments/coin.sh final --formulation ei  --signal reward --alpha 0.1        # reference with reward access
 #   STEPS=2000000 TIME=01:00:00 scripts/experiments/coin.sh final --formulation none                                   # plain PPO
 #
+# Imagined rewards (--signal imagined: my own reward model on the other's transitions; no reward access), three grids:
+#   grids/coin_imagined_other.txt    EI/SVO on the other's imagined advantage, my critic on its observations, --social-scale
+#   grids/coin_imagined_shaped.txt   imagined rewards through the intrinsic-reward path, all formulations
+#   grids/coin_value_sc.txt          the current value signal with --social-scale at the same relative alphas
+#   scripts/experiments/coin.sh tune-imagined     # write + submit the three grids (SVO phi=0 rows are the own-value control)
+#
 # Stage 2b (PPO sensitivity of the same configurations: PPO_LRS x PPO_ENTS, PPO_SEEDS each; the baseline and the
 # reward-signal reference get the same grid so the comparison stays fair):
 #   scripts/experiments/coin.sh ppo --formulation svo --signal value --alpha 30 --phi 0.523599
@@ -64,6 +70,12 @@ CONCURRENT=${CONCURRENT:-50}
 FORMULATIONS=${FORMULATIONS:-"ei sia svo ia"}   # social-term formulations to tune (plain PPO is always included)
 VALUE_ALPHAS=${VALUE_ALPHAS:-"0 0.03 0.1 0.3 1 3 10 30 100"}
 REWARD_ALPHAS=${REWARD_ALPHAS:-"0 0.003 0.01 0.03 0.1 0.3 1 3"}
+# --signal imagined (`tune-imagined`): `other` = EI/SVO on the other's imagined advantage with --social-scale, so alpha is
+# a weight relative to the own advantage; `shaped` = imagined rewards as intrinsic reward, alpha in reward units.
+# SVO with phi = 0 is the own-value control (in `other` mode it collapses to plain PPO by construction).
+RELATIVE_ALPHAS=${RELATIVE_ALPHAS:-"0.3 1 3"}
+IMAGINED_PHIS=${IMAGINED_PHIS:-"pi/6 pi/4 0"}
+IMAGINED_WARMUP=${IMAGINED_WARMUP:-20}
 TRAIN_ARGS=${TRAIN_ARGS:-"--num-envs 8 --num-steps 128 --num-minibatches 4"}
 PPO_LRS=${PPO_LRS:-"1e-4 2.5e-4 1e-3"}   # `ppo` subcommand: learning rates x entropy coefficients x PPO_SEEDS
 PPO_ENTS=${PPO_ENTS:-"0.01 0.05"}
@@ -88,13 +100,32 @@ make_grids() {
   echo "LaTeX tables: grids/${TAG}_value_table.tex grids/${TAG}_reward_table.tex"
 }
 
+IMAGINED_GRIDS=("grids/${TAG}_imagined_other.txt" "grids/${TAG}_imagined_shaped.txt" "grids/${TAG}_value_sc.txt")
+make_imagined_grids() {
+  mkdir -p grids
+  # imagined rewards, other's advantage under my critic (EI, SVO incl. the phi=0 control), relative alphas
+  $PY scripts/make_grid.py $COIN_ARGS --signals imagined --alphas $RELATIVE_ALPHAS --seeds $SEEDS \
+      --formulations ei svo --phis $IMAGINED_PHIS \
+      --extra "$TRAIN_ARGS --imagined-critic other --social-scale --imagined-warmup $IMAGINED_WARMUP" -o "${IMAGINED_GRIDS[0]}"
+  # imagined rewards through the intrinsic-reward path (all formulations), alphas in reward units
+  $PY scripts/make_grid.py $COIN_ARGS --signals imagined --alphas $REWARD_ALPHAS --seeds $SEEDS \
+      --formulations $FORMULATIONS --extra "$TRAIN_ARGS --imagined-critic shaped --imagined-warmup $IMAGINED_WARMUP" -o "${IMAGINED_GRIDS[1]}"
+  # the current value signal with relative scaling (EI, SVO incl. the phi=0 control), for the same relative alphas
+  $PY scripts/make_grid.py $COIN_ARGS --signals value --alphas $RELATIVE_ALPHAS --seeds $SEEDS \
+      --formulations ei svo --phis $IMAGINED_PHIS --extra "$TRAIN_ARGS --social-scale" -o "${IMAGINED_GRIDS[2]}"
+}
+
 case "${1:-}" in
   grids)
-    make_grids ;;
+    make_grids
+    make_imagined_grids ;;
   tune)
     make_grids
     scripts/slurm/submit.sh "$VALUE_GRID" "$CONCURRENT" --time="$TIME"
     scripts/slurm/submit.sh "$REWARD_GRID" "$CONCURRENT" --time="$TIME" ;;
+  tune-imagined)
+    make_imagined_grids
+    for g in "${IMAGINED_GRIDS[@]}"; do scripts/slurm/submit.sh "$g" "$CONCURRENT" --time="$TIME"; done ;;
   final)
     shift
     [ $# -gt 0 ] || { echo "usage: $0 final <train.py args, e.g. --formulation ei --signal value --alpha 3>"; exit 1; }
@@ -124,8 +155,9 @@ case "${1:-}" in
     done
     echo "runs -> $RUN_ROOT/${TAG}_ppo_${CONF}_lr*_ent*" ;;
   summary)
-    for g in value reward; do
-      echo "=== $g signal ($RUN_ROOT/${TAG}_$g)"
+    for g in value reward imagined_other imagined_shaped value_sc; do
+      [ -d "$RUN_ROOT/${TAG}_$g" ] || continue
+      echo "=== $g ($RUN_ROOT/${TAG}_$g)"
       $PY scripts/summarize_runs.py "$RUN_ROOT/${TAG}_$g" --last "$LAST" --csv "${TAG}_${g}.csv" --tags $SUMMARY_TAGS
     done
     FINAL_DIRS=$(ls -d "$RUN_ROOT/${TAG}_final_"* 2>/dev/null || true)
@@ -148,5 +180,5 @@ case "${1:-}" in
       $PY scripts/best_configs.py $PPO_DIRS --last "$LAST" --top "${TOP:-5}"
     fi ;;
   *)
-    sed -n '2,30p' "$0"; exit 1 ;;
+    sed -n '2,40p' "$0"; exit 1 ;;
 esac

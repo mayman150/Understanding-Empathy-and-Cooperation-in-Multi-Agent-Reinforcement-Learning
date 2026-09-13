@@ -31,10 +31,22 @@ experiment in the plan:
     # Hughes et al. (2018) inequity-aversion reward baseline
     python train.py --env-id meltingpot:clean_up --formulation ia --signal reward --alpha 5 --beta 0.05
 
+    # imagined rewards (no reward access): my own reward model on the other's transitions.
+    #   other:  EI/SVO on the GAE of the other's imagined rewards, bootstrapped with MY critic on the other's
+    #           observations; --social-scale makes alpha a weight relative to my own advantage
+    #   shaped: imagined rewards through the intrinsic-reward path (every formulation)
+    python train.py --env-id coin --max-cycles 50 --formulation ei --signal imagined --imagined-critic other \
+        --social-scale --alpha 1 --imagined-warmup 20
+    python train.py --env-id coin --max-cycles 50 --formulation sia --signal imagined --imagined-critic shaped --alpha 0.1
+
 The rollout / GAE / clipped-surrogate code follows CleanRL's ``ppo_atari.py`` and
-``ppo_atari_lstm.py``; the only additions are (i) a ``num_agents`` axis with one network
-per agent, (ii) the social term ``X_i`` added to the advantage (``--signal value``) and
-(iii) optional intrinsic reward (``--signal reward``).
+``ppo_atari_lstm.py``; the additions are (i) a ``num_agents`` axis with one network per
+agent, (ii) the social term ``X_i`` added to the advantage (``--signal value``, ``--signal
+imagined --imagined-critic other``), (iii) optional intrinsic reward (``--signal reward``,
+``--signal imagined --imagined-critic shaped``) and (iv) a per-agent reward model trained
+on the agent's own transitions (``--signal imagined``).  TensorBoard tags ``imagined/corr``
+and ``imagined/mae`` compare the imagined rewards of the others with their true rewards
+(diagnostic only; the true rewards never enter learning).
 """
 from __future__ import annotations
 
@@ -53,7 +65,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from empathy_marl.agents import LSTMState, MultiAgents
 from empathy_marl.args import Args, resolve
-from empathy_marl.empathy import RewardSocialShaper, parse_per_agent, social_term
+from empathy_marl.empathy import ImaginedRewardShaper, RewardSocialShaper, parse_per_agent, social_term, standardize
 from empathy_marl.envs import is_prisoners_dilemma, make_envs
 from empathy_marl.metrics import MultiAgentEpisodeStatistics
 
@@ -62,10 +74,65 @@ def make_run_name(args: Args) -> str:
     env_tag = args.env_id.split(":")[-1]
     if is_prisoners_dilemma(args.env_id) or args.env_id.startswith("debug"):
         env_tag = f"{env_tag}_n{args.num_agents}"
-    method = args.formulation if args.formulation == "none" else f"{args.formulation}_{args.signal}"
+    if args.formulation == "none":
+        method = "none"
+    elif args.signal == "imagined":
+        method = f"{args.formulation}_imagined_{args.imagined_critic}"
+    else:
+        method = f"{args.formulation}_{args.signal}"
+    if args.social_scale and args.formulation != "none" and args.signal in ("value", "imagined"):
+        method += "_sc"
     policy = "lstm" if args.recurrent else "ff"
     params = f"a{args.alpha}_b{args.beta}_p{args.phi}".replace(",", "-")
     return f"{env_tag}__{method}__{policy}__{params}__s{args.seed}__{int(time.time())}"
+
+
+def cross_gae(
+    rewards: torch.Tensor,
+    values: torch.Tensor,
+    next_values: torch.Tensor,
+    terminated: torch.Tensor,
+    episode_end: torch.Tensor,
+    gamma: float,
+    lam: float,
+) -> torch.Tensor:
+    """GAE of every observed agent's (imagined) reward stream under every observer's critic.
+
+    ``rewards, values, next_values: (T, E, N, N)`` with ``[t, e, i, j]`` = observer ``i``, observed ``j``:
+    ``rewards`` = ``i``'s imagined reward of ``j`` at ``t`` (diagonal: own true reward), ``values`` = ``V_i(o_j^t)``,
+    ``next_values`` = ``V_i`` of ``j``'s *true* next observation (the terminal observation at episode ends, so
+    time-limit truncations are bootstrapped like ``--bootstrap-truncation``).  ``terminated, episode_end: (T, E, N)``
+    are the observed agents' flags: ``terminated`` = real terminal (no bootstrap), ``episode_end`` = the episode of
+    ``j`` ended at ``t`` (the lambda-recursion is cut there).  Returns ``(T, E, N, N)``.
+    """
+    T = rewards.shape[0]
+    adv = torch.zeros_like(rewards)
+    last = torch.zeros_like(rewards[0])
+    for t in reversed(range(T)):
+        boot = (1.0 - terminated[t]).unsqueeze(1)  # (E, 1, N): broadcast over observers
+        cont = (1.0 - episode_end[t]).unsqueeze(1)
+        delta = rewards[t] + gamma * next_values[t] * boot - values[t]
+        adv[t] = last = delta + gamma * lam * cont * last
+    return adv
+
+
+@torch.no_grad()
+def imagined_diagnostics(rhat: torch.Tensor, env_rewards: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per observer ``i``: correlation and mean absolute error between its imagined rewards of the others,
+    ``rhat[..., i, j]`` (``j != i``), and their true rewards ``env_rewards[..., j]`` (diagnostic only, never used
+    for learning).  ``rhat: (T, E, N, N)``, ``env_rewards: (T, E, N)`` -> two ``(N,)`` tensors."""
+    N = rhat.shape[-1]
+    corr = torch.zeros(N, device=rhat.device)
+    mae = torch.zeros(N, device=rhat.device)
+    for i in range(N):
+        others = [j for j in range(N) if j != i]
+        pred = rhat[..., i, others].reshape(-1)
+        true = env_rewards[..., others].reshape(-1)
+        mae[i] = (pred - true).abs().mean()
+        pc, tc = pred - pred.mean(), true - true.mean()
+        denom = pc.norm() * tc.norm()
+        corr[i] = (pc * tc).sum() / denom if denom > 0 else torch.tensor(float("nan"), device=rhat.device)
+    return corr, mae
 
 
 @torch.no_grad()
@@ -163,10 +230,15 @@ if __name__ == "__main__":
     phi = parse_per_agent(args.phi, N, "phi")
     use_value_signal = args.formulation != "none" and args.signal == "value"
     use_reward_signal = args.formulation != "none" and args.signal == "reward"
+    use_imagined = args.signal == "imagined"  # the reward model is trained even for formulation=none (diagnostics)
+    imagined_other = use_imagined and args.formulation != "none" and args.imagined_critic == "other"
+    imagined_shaped = use_imagined and args.formulation != "none" and args.imagined_critic == "shaped"
     print(f"env={args.env_id} agents={N} envs={E} obs={obs_shape} ({bundle.obs_type}) actions={bundle.single_action_space.n}")
     print(
         f"formulation={args.formulation} signal={args.signal} alpha={alpha.tolist()} beta={beta.tolist()} "
         f"phi={phi.tolist()} recurrent={args.recurrent}"
+        + (f" imagined_critic={args.imagined_critic} warmup={args.imagined_warmup}" if use_imagined else "")
+        + (" social_scale" if args.social_scale else "")
     )
 
     agents = MultiAgents(
@@ -176,6 +248,7 @@ if __name__ == "__main__":
         bundle.obs_type,
         recurrent=args.recurrent,
         lstm_hidden_size=args.lstm_hidden_size,
+        reward_model=use_imagined,
     ).to(device)
     optimizer = optim.Adam(agents.parameters(), lr=args.learning_rate, eps=1e-5)
     reward_shaper = (
@@ -183,6 +256,12 @@ if __name__ == "__main__":
         if use_reward_signal
         else None
     )
+    imagined_shaper = (
+        ImaginedRewardShaper(args.formulation, alpha, beta, phi, args.gamma, args.reward_lambda, E, N, device)
+        if imagined_shaped
+        else None
+    )
+    eye = torch.eye(N, dtype=torch.bool, device=device)
 
     def to_obs_tensor(x: np.ndarray) -> torch.Tensor:
         return torch.as_tensor(np.asarray(x), dtype=obs_dtype, device=device).reshape((E, N) + obs_shape)
@@ -196,6 +275,10 @@ if __name__ == "__main__":
     social = torch.zeros((T, E, N), device=device)  # the social term: X_i (signal=value) or intrinsic reward (signal=reward)
     dones = torch.zeros((T, E, N), device=device)
     values = torch.zeros((T, E, N), device=device)
+    # signal=imagined: the TRUE next observation of every step (the terminal observation at episode ends, where
+    # `obs[t+1]` is already the reset observation) and the real-termination flags, for the reward model / cross GAE
+    next_obs_buf = torch.zeros_like(obs) if use_imagined else None
+    term_buf = torch.zeros((T, E, N), device=device)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -236,19 +319,23 @@ if __name__ == "__main__":
             term_t = torch.as_tensor(np.asarray(terminations), dtype=torch.float32, device=device).reshape(E, N)
             trunc_t = torch.as_tensor(np.asarray(truncations), dtype=torch.float32, device=device).reshape(E, N)
             env_rewards[step] = reward_t
+            term_buf[step] = term_t
+            done_t = torch.maximum(term_t, trunc_t)
+            terminal_obs_t = None
+            if bool(done_t.any()):
+                raw_terminal = bundle.extract_terminal_obs(infos)
+                terminal_obs_t = None if raw_terminal is None else to_obs_tensor(raw_terminal)
 
             # Time-limit truncation is not a real terminal: bootstrap from V(terminal observation)
             # by folding gamma * V into the reward (the GAE below then treats the step as terminal).
             if args.bootstrap_truncation:
                 trunc_only = trunc_t * (1.0 - term_t)
-                if bool(trunc_only.any()):
-                    terminal_obs = bundle.extract_terminal_obs(infos)
-                    if terminal_obs is not None:
-                        with torch.no_grad():
-                            terminal_value, _ = agents.get_values(
-                                to_obs_tensor(terminal_obs), next_lstm_state, torch.zeros((E, N), device=device)
-                            )
-                        reward_t = reward_t + args.gamma * terminal_value * trunc_only
+                if bool(trunc_only.any()) and terminal_obs_t is not None:
+                    with torch.no_grad():
+                        terminal_value, _ = agents.get_values(
+                            terminal_obs_t, next_lstm_state, torch.zeros((E, N), device=device)
+                        )
+                    reward_t = reward_t + args.gamma * terminal_value * trunc_only
 
             if reward_shaper is not None:  # signal=reward: intrinsic reward built from the others' (smoothed) rewards
                 intrinsic = reward_shaper(env_rewards[step], dones[step])
@@ -256,8 +343,13 @@ if __name__ == "__main__":
                 reward_t = reward_t + intrinsic
             rewards[step] = reward_t
 
-            next_done = torch.maximum(term_t, trunc_t)
+            next_done = done_t
             next_obs = to_obs_tensor(bundle.extract_obs(raw_obs))
+            if next_obs_buf is not None:  # true next observation of this step (terminal obs where an episode ended)
+                next_obs_buf[step] = next_obs
+                if terminal_obs_t is not None:
+                    ended = done_t.bool()
+                    next_obs_buf[step][ended] = terminal_obs_t[ended]
 
             # Episode statistics.  Env copies run in lockstep (fixed episode length), so all E of them usually
             # finish on the same step; log the mean over the finished copies once per step rather than E points
@@ -294,6 +386,27 @@ if __name__ == "__main__":
                         if defined[:, i].any():
                             writer.add_scalar(f"charts/{key}/{name}", vals[defined[:, i], i].mean(), global_step)
 
+        # signal=imagined: imagine every other agent's reward with my own reward model -----------------
+        social_on = iteration > args.imagined_warmup
+        episode_end = torch.cat([dones[1:], next_done.unsqueeze(0)], dim=0)  # (T, E, N): the episode of agent j ended at t
+        if use_imagined:
+            with torch.no_grad():
+                rhat = agents.cross_rewards(
+                    obs.reshape((T * E, N) + obs_shape), actions.reshape(T * E, N),
+                    next_obs_buf.reshape((T * E, N) + obs_shape),
+                ).reshape(T, E, N, N)  # [t, e, i, j] = f_i(o_j^t, a_j^t, o_j^{t+1})
+                imagined_corr, imagined_mae = imagined_diagnostics(rhat, env_rewards)
+                rhat = torch.where(eye, env_rewards.unsqueeze(-1).expand(-1, -1, -1, N), rhat)  # diagonal: own true reward
+            if imagined_shaped:  # the reward signal with imagined rewards: intrinsic reward, enters the return
+                with torch.no_grad():
+                    for t in range(T):
+                        intrinsic = imagined_shaper(rhat[t], dones[t])
+                        if social_on:
+                            social[t] = intrinsic
+                            rewards[t] = rewards[t] + intrinsic
+                        else:
+                            social[t] = 0.0
+
         # bootstrap value if not done ---------------------------------------------------------
         with torch.no_grad():
             next_value, _ = agents.get_values(next_obs, next_lstm_state, next_done)
@@ -310,15 +423,31 @@ if __name__ == "__main__":
                 advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
             returns = advantages + values
 
+            scaled_advantages = standardize(advantages, dims=(0, 1)) if args.social_scale else advantages
             # signal=value: X_i(t) = F_i(V_i(s_j^{t+1})), a constant coefficient computed with the rollout-time critic
             if use_value_signal:
                 v_next, cross_lstm_state = compute_next_cross_values(
                     agents, obs, next_obs, dones, next_done, cross_lstm_state, args.cross_value_chunk
                 )
-                next_nonterminal_all = 1.0 - torch.cat([dones[1:], next_done.unsqueeze(0)], dim=0)  # (T, E, N)
-                social[:] = social_term(args.formulation, v_next, alpha, beta, phi) * next_nonterminal_all
-            # signal=reward: the intrinsic term already entered `rewards` (and GAE) during the rollout
-            advantage_coef = advantages + social if use_value_signal else advantages
+                z = standardize(v_next, dims=(0, 1)) if args.social_scale else v_next  # per (i, j) over the batch
+                social[:] = social_term(args.formulation, z, alpha, beta, phi) * (1.0 - episode_end)
+            # signal=imagined, critic=other: z_ij = GAE of j's imagined rewards under MY critic on j's observations
+            # (delta = rhat_ij + gamma V_i(o_j') - V_i(o_j)), z_ii = my own advantage; F_i(z) is added to the advantage
+            if imagined_other:
+                flat_obs = obs.reshape((T * E, N) + obs_shape)
+                flat_next = next_obs_buf.reshape((T * E, N) + obs_shape)
+                v_cross, _ = agents.cross_values(flat_obs)  # feed-forward only (resolve() enforces it)
+                v_cross_next, _ = agents.cross_values(flat_next)
+                adv_cross = cross_gae(
+                    rhat, v_cross.reshape(T, E, N, N), v_cross_next.reshape(T, E, N, N),
+                    term_buf, episode_end, args.gamma, args.gae_lambda,
+                )
+                z = torch.where(eye, scaled_advantages.unsqueeze(-1).expand(-1, -1, -1, N), adv_cross)
+                if args.social_scale:
+                    z = torch.where(eye, z, standardize(adv_cross, dims=(0, 1)))
+                social[:] = social_term(args.formulation, z, alpha, beta, phi) if social_on else 0.0
+            # signal=reward / imagined-shaped: the intrinsic term already entered `rewards` (and GAE)
+            advantage_coef = scaled_advantages + social if (use_value_signal or imagined_other) else advantages
 
         # flatten the batch: row = t * E + e (time-major, as required by the LSTM) ------------------
         b_obs = obs.reshape((T * E, N) + obs_shape)
@@ -328,6 +457,9 @@ if __name__ == "__main__":
         b_advantages = advantage_coef.reshape(T * E, N)  # GAE advantage (+ X_i for signal=value)
         b_returns = returns.reshape(T * E, N)
         b_values = values.reshape(T * E, N)
+        if use_imagined:  # reward-model regression targets: own transitions -> own environment reward
+            b_next_obs = next_obs_buf.reshape((T * E, N) + obs_shape)
+            b_env_rewards = env_rewards.reshape(T * E, N)
 
         # Optimizing the policy and value network ---------------------------------------------------
         if args.recurrent:
@@ -389,6 +521,10 @@ if __name__ == "__main__":
 
                 entropy_loss = entropy.mean(dim=0)
                 loss_per_agent = pg_loss - args.ent_coef * entropy_loss + args.vf_coef * v_loss
+                if use_imagined:  # reward model: regress my own reward on my own observation transition
+                    pred_reward = agents.predict_own_rewards(b_obs[mb_inds], b_actions[mb_inds], b_next_obs[mb_inds])
+                    rm_loss = 0.5 * ((pred_reward - b_env_rewards[mb_inds]) ** 2).mean(dim=0)
+                    loss_per_agent = loss_per_agent + args.reward_model_coef * rm_loss
                 loss = loss_per_agent.sum()  # networks are independent, so the sum decouples
 
                 optimizer.zero_grad()
@@ -427,6 +563,11 @@ if __name__ == "__main__":
             writer.add_scalar(f"social/term_abs_mean/{name}", social[:, :, i].abs().mean().item(), global_step)
             writer.add_scalar(f"social/advantage_abs_mean/{name}", advantages[:, :, i].abs().mean().item(), global_step)
             writer.add_scalar(f"social/env_reward_abs_mean/{name}", env_rewards[:, :, i].abs().mean().item(), global_step)
+            if use_imagined:
+                writer.add_scalar(f"losses/reward_model/{name}", rm_loss[i].item(), global_step)
+                # how well agent i's reward model, built from its OWN rewards, predicts the OTHERS' true rewards
+                writer.add_scalar(f"imagined/corr/{name}", imagined_corr[i].item(), global_step)
+                writer.add_scalar(f"imagined/mae/{name}", imagined_mae[i].item(), global_step)
             if bundle.cooperate_action is not None:
                 writer.add_scalar(f"charts/cooperation_rate/{name}", coop[i].item(), global_step)
         print(f"iteration={iteration}/{args.num_iterations} global_step={global_step} SPS={sps}")

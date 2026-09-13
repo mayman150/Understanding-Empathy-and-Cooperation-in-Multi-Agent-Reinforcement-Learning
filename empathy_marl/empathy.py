@@ -28,15 +28,41 @@ Signals
     inequity-aversion reward of Hughes et al. (2018) (alpha = 5 / beta = 0.05 in their
     experiments); with ``svo`` and lambda = 0 it is the reward of Schwarting et al. (2019).
 
-Because both signals share :func:`social_term`, a value-vs-reward comparison differs only
-in what ``z`` is and where the term enters (policy-gradient coefficient vs. reward).
+``imagined`` (no access to other agents' rewards; outcome-based):
+    agent *i* learns a reward model ``f_i(o, a, o')`` of its **own** reward from its own
+    transitions and imagines agent *j*'s reward as ``rhat_ij = f_i(o_j, a_j, o_j')`` (its observation, action and next observation).
+    Two ways to use it (``--imagined-critic``):
+
+    * ``shaped``: ``rhat`` replaces ``r_j`` in the reward signal above
+      (:class:`ImaginedRewardShaper`), so ``F_i`` is an intrinsic reward and the agent's critic
+      learns the shaped return.  Works for every formulation.
+    * ``other``: for EI / SVO, ``z[i, j] = Ahat_ij``, the GAE advantage of *j*'s imagined
+      rewards with agent *i*'s **own critic on j's observations** as *j*'s value function
+      (``delta = rhat_ij + gamma V_i(o_j') - V_i(o_j)``), and ``z[i, i] = A_i``.  ``F_i(z)`` is added
+      to the advantage.  With lambda = 1 this is the policy gradient of ``J_i + alpha * J_j^imagined``;
+      the value function plays its usual role (bootstrap / baseline of a return made of
+      outcomes) instead of standing in for the reward.
+
+Because all signals share :func:`social_term`, comparisons differ only in what ``z`` is and
+where the term enters (policy-gradient coefficient vs. reward).  :func:`standardize` implements
+the optional relative scaling (``--social-scale``): every ``z[i, j]`` and the own advantage are
+standardised over the batch before ``F_i`` is applied, so ``alpha`` is a weight relative to the
+agent's own advantage.
 """
 from __future__ import annotations
 
 import torch
 
 FORMULATIONS = ("none", "ei", "svo", "sia", "ia")
-SIGNALS = ("value", "reward")
+SIGNALS = ("value", "reward", "imagined")
+IMAGINED_CRITICS = ("other", "shaped")
+
+
+def standardize(x: torch.Tensor, dims: tuple[int, ...], eps: float = 1e-6) -> torch.Tensor:
+    """``(x - mean) / max(std, eps)`` over ``dims`` (kept per remaining index); constants map to 0."""
+    mean = x.mean(dim=dims, keepdim=True)
+    std = x.std(dim=dims, keepdim=True, unbiased=False)
+    return (x - mean) / torch.clamp(std, min=eps)
 
 
 def parse_per_agent(spec: str | float, num_agents: int, name: str) -> torch.Tensor:
@@ -133,3 +159,42 @@ class RewardSocialShaper:
         self.e = self.decay * self.e * (1.0 - episode_start) + rewards
         z = self.e.unsqueeze(-2).expand(-1, self.num_agents, -1)  # z[e, i, j] = e_j (everyone sees true rewards)
         return social_term(self.formulation, z, self.alpha, self.beta, self.phi)
+
+
+class ImaginedRewardShaper:
+    """``signal=imagined, critic=shaped``: the reward signal with imagined rewards instead of observed ones.
+
+    Keeps one smoothed trace per (observer *i*, observed *j*): ``ehat[e, i, j]`` with
+    ``ehat_ij^t = gamma * lambda * ehat_ij^{t-1} + rhat_ij^t``, where ``rhat_ij`` is *i*'s imagined reward
+    of *j* and ``rhat_ii`` is *i*'s own true reward.  ``z[e, i, j] = ehat_ij`` differs across observers,
+    unlike :class:`RewardSocialShaper` where everyone reads the same true ``e_j``.
+    """
+
+    def __init__(
+        self,
+        formulation: str,
+        alpha: torch.Tensor,
+        beta: torch.Tensor,
+        phi: torch.Tensor,
+        gamma: float,
+        lam: float,
+        num_envs: int,
+        num_agents: int,
+        device: torch.device,
+    ):
+        if formulation not in FORMULATIONS:
+            raise ValueError(f"unknown formulation {formulation!r}")
+        if formulation != "none" and num_agents < 2:
+            raise ValueError("social terms need at least two agents")
+        self.formulation = formulation
+        self.alpha, self.beta, self.phi = alpha.to(device), beta.to(device), phi.to(device)
+        self.decay = gamma * lam
+        self.num_agents = num_agents
+        self.e = torch.zeros(num_envs, num_agents, num_agents, device=device)
+
+    def __call__(self, imagined: torch.Tensor, episode_start: torch.Tensor) -> torch.Tensor:
+        """``imagined: (num_envs, N, N)`` (``[e, i, j]`` = i's estimate of j's reward this step, diagonal = own true
+        reward), ``episode_start: (num_envs, N)`` for the observed agents -> intrinsic reward ``(num_envs, N)``."""
+        reset = (1.0 - episode_start).unsqueeze(1)  # (E, 1, N): the trace of observed agent j restarts with j's episode
+        self.e = self.decay * self.e * reset + imagined
+        return social_term(self.formulation, self.e, self.alpha, self.beta, self.phi)

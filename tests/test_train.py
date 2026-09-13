@@ -117,6 +117,62 @@ def test_train_coin_game_logs_episode_cooperation_rate(signal, tmp_path):
     assert "social/term_abs_mean/player_0" in tags
 
 
+COIN_FAST = ["--env-id", "coin", "--max-cycles", "8", "--num-envs", "4", "--num-steps", "16", "--num-minibatches", "2",
+             "--total-timesteps", "192", "--no-cuda"]
+
+
+@pytest.mark.parametrize(
+    "extra, method",
+    [
+        (["--formulation", "ei", "--imagined-critic", "other", "--social-scale", "--alpha", "1"], "ei_imagined_other_sc"),
+        (["--formulation", "svo", "--imagined-critic", "other", "--alpha", "1", "--phi", "0.5236"], "svo_imagined_other"),
+        (["--formulation", "sia", "--imagined-critic", "shaped", "--alpha", "0.1"], "sia_imagined_shaped"),
+        (["--formulation", "ia", "--imagined-critic", "shaped", "--alpha", "0.1", "--beta", "0.05", "--recurrent"], "ia_imagined_shaped"),
+        (["--formulation", "none"], "none"),
+    ],
+)
+def test_train_imagined_signal(extra, method, tmp_path):
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    out = _run(COIN_FAST + ["--signal", "imagined", "--imagined-warmup", "1", *extra], tmp_path)
+    assert "iteration=3/3" in out
+    run_dirs = glob.glob(str(tmp_path / f"coin__{method}__*"))
+    assert len(run_dirs) == 1, glob.glob(str(tmp_path / "*"))
+    acc = EventAccumulator(run_dirs[0], size_guidance={"scalars": 0})
+    acc.Reload()
+    tags = set(acc.Tags()["scalars"])
+    assert {"losses/reward_model/player_0", "imagined/corr/player_0", "imagined/mae/player_1"} <= tags
+    if method != "none":
+        term = [s.value for s in acc.Scalars("social/term_abs_mean/player_0")]
+        assert term[0] == 0.0  # warm-up iteration: social term off
+        assert any(v > 0.0 for v in term[1:])  # ... then on
+    data = torch.load(os.path.join(run_dirs[0], "agents.pt"), map_location="cpu", weights_only=False)
+    assert any("reward_model" in k for k in data["agents"])
+    agents = MultiAgents(2, spaces.Box(0.0, 1.0, (36,), np.float32), spaces.Discrete(4), "vector",
+                         recurrent="--recurrent" in extra, reward_model=True)
+    agents.load_state_dict(data["agents"])
+
+
+def test_train_value_signal_with_social_scale(tmp_path):
+    out = _run(COIN_FAST + ["--formulation", "ei", "--signal", "value", "--social-scale", "--alpha", "1"], tmp_path)
+    assert "iteration=3/3" in out
+    assert len(glob.glob(str(tmp_path / "coin__ei_value_sc__*"))) == 1
+
+
+@pytest.mark.parametrize(
+    "extra, message",
+    [
+        (["--formulation", "sia", "--imagined-critic", "other"], "supports ei and svo"),
+        (["--formulation", "ei", "--imagined-critic", "other", "--recurrent", "--num-envs", "4", "--num-minibatches", "2"], "feed-forward"),
+    ],
+)
+def test_imagined_other_rejects_unsupported_combinations(extra, message, tmp_path):
+    cmd = [sys.executable, os.path.join(ROOT, "train.py"), "--run-dir", str(tmp_path), *COIN_FAST, "--signal", "imagined",
+           "--alpha", "1", *extra]
+    res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=120)
+    assert res.returncode != 0 and message in res.stderr
+
+
 def test_alpha_list_of_wrong_length_is_rejected(tmp_path):
     cmd = [sys.executable, os.path.join(ROOT, "train.py"), "--run-dir", str(tmp_path), *PD_FAST, "--num-agents", "3",
            "--formulation", "ei", "--alpha", "0,1"]

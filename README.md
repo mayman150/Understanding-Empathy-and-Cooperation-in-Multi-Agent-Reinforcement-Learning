@@ -63,7 +63,7 @@ legacy/                  original scripts, kept for reference only
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt          # Melting Pot (dm-meltingpot / dmlab2d) is Linux only
-python -m pytest tests -q                # 60 tests, ~35 s, no Melting Pot needed
+python -m pytest tests -q                # 75 tests, ~50 s, no Melting Pot needed
 ```
 
 ### Train
@@ -103,13 +103,23 @@ Two orthogonal switches define a method:
 
 * `--formulation`: the functional form `F_i` of the social term: `none` (plain PPO), `ei`,
   `svo`, `sia`, `ia`.
-* `--signal`: what `F_i` is computed from.  `value` (our proposal) uses the agent's **own
-  critic** on the other agents' next observations, `z[i, j] = V_i(s_j')`, and adds
-  `X_i = F_i(z)` to the PPO advantage; no agent ever sees another agent's reward.  `reward`
-  (the literature's approach) uses the others' temporally smoothed rewards, `z[i, j] = e_j`,
-  and adds `F_i(z)` as an intrinsic reward (`--reward-lambda 0.975` as in Hughes et al.; `0`
-  for raw rewards as in Schwarting et al.).  Because both share the same `F_i`, a
-  value-vs-reward comparison isolates the signal.
+* `--signal`: what `F_i` is computed from.  `value` uses the agent's **own critic** on the
+  other agents' next observations, `z[i, j] = V_i(s_j')`, and adds `X_i = F_i(z)` to the PPO
+  advantage; no agent ever sees another agent's reward.  `reward` (the literature's approach)
+  uses the others' temporally smoothed rewards, `z[i, j] = e_j`, and adds `F_i(z)` as an
+  intrinsic reward (`--reward-lambda 0.975` as in Hughes et al.; `0` for raw rewards as in
+  Schwarting et al.).  `imagined` (no reward access either) trains a per-agent **reward model**
+  `f_i(o, a, o')` on the agent's own transitions and imagines the others' rewards as
+  `f_i(o_j, a_j, o_j')`; with `--imagined-critic other` (EI, SVO) `z[i, j]` is the GAE advantage
+  of `j`'s imagined rewards with the agent's own critic on `j`'s observations as `j`'s value
+  function and `F_i(z)` is added to the advantage, with `--imagined-critic shaped` the imagined
+  rewards go through the intrinsic-reward path (all formulations).  `--imagined-warmup K` keeps
+  the social term off while the reward model trains; `imagined/corr/<agent>` logs how well the
+  imagined rewards track the others' true rewards (diagnostic only).  Because all signals share
+  the same `F_i`, comparisons isolate the signal.
+* `--social-scale` standardises the own advantage and every `z[i, j]` over the batch before
+  `F_i` is applied (value and imagined/other signals), so `alpha` is a weight relative to the
+  agent's own advantage instead of a number on the value scale.
 
 `--alpha/--beta/--phi` accept one value or a comma-separated per-agent list (`--alpha 0,20` =
 selfish vs. empathetic).  `--num-agents` sets the player count for `pd` / `debug:image`
@@ -162,6 +172,10 @@ STEPS=2000000 TIME=01:00:00 scripts/experiments/coin.sh final --formulation none
 scripts/experiments/coin.sh ppo --formulation svo --signal value --alpha 30 --phi 0.523599
 scripts/experiments/coin.sh ppo --formulation none
 python scripts/best_configs.py ~/scratch/MARL/empathy_runs/coin_ppo_*     # ranking per method + the `final` line for each winner
+# imagined rewards: three grids (imagined/other with --social-scale, imagined/shaped, value with --social-scale;
+# SVO phi=0 rows are the own-value control)
+scripts/experiments/coin.sh tune-imagined
+python scripts/plot_final.py ~/scratch/MARL/empathy_runs/coin_best_final_* -o figures_coin   # seed means, 95% CIs
 scripts/experiments/pd.sh tune                                            # the PD grids: 3 seeds x 300k steps (327 jobs)
 SEEDS="1 2 3 4 5" NUM_AGENTS=4 scripts/experiments/pd.sh tune             # variants via environment variables
 ```

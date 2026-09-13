@@ -59,6 +59,7 @@ def main(args: EvalArgs) -> dict:
         bundle.obs_type,
         recurrent=targs["recurrent"],
         lstm_hidden_size=targs["lstm_hidden_size"],
+        reward_model=targs.get("signal") == "imagined",
     ).to(device)
     agents.load_state_dict(data["agents"])
     agents.eval()

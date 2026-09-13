@@ -52,6 +52,7 @@ def main() -> None:
     agents = MultiAgents(
         N, spaces.Box(0.0, 1.0, (OBS_DIM,), np.float32), spaces.Discrete(2), "vector",
         recurrent=targs["recurrent"], lstm_hidden_size=targs["lstm_hidden_size"],
+        reward_model=targs.get("signal") == "imagined",
     )
     agents.load_state_dict(data["agents"])
     agents.eval()
