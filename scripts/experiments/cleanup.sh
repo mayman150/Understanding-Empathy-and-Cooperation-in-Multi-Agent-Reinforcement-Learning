@@ -20,23 +20,35 @@
 #   IA  reward                                  Hughes et al. 2018 with true rewards (the published Clean Up method)
 #   IA  value (+ --social-scale)                the paper's IA on values
 #
-# Every imagined configuration uses --imagined-warmup 50 (about 100k steps of plain PPO while the reward model learns;
-# apples are rare at the start) and --reward-model-replay 2048 (own rewarded transitions are replayed so that an agent
-# that stops eating does not forget what eating looks like).  One PPO setting per grid file (PPO_SETTINGS crosses).
+# Every imagined configuration uses a warm-up of about WARMUP_STEPS (100k) environment steps of plain PPO while the reward
+# model learns (apples are rare at the start; the number of iterations is derived from the rollout size) and
+# --reward-model-replay 2048 (own rewarded transitions are replayed so that an agent that stops eating does not forget
+# what eating looks like).  One PPO setting per grid file (PPO_SETTINGS crosses).
 #
-# Usage (from the repository root, on the cluster):
-#   scripts/experiments/cleanup.sh grids                 # write grids/cleanup_stageA[_lr..].txt (inspect, count jobs)
-#   scripts/experiments/cleanup.sh tune                  # write + submit (3 seeds x 29 configurations = 87 jobs per PPO setting)
-#   PPO_SETTINGS="2.5e-4:0.01 1e-3:0.01" scripts/experiments/cleanup.sh tune      # crossed with PPO settings
-#   scripts/experiments/cleanup.sh baseline              # plain PPO + EI/IA with true rewards only (cheap PPO check first)
-#   IA_PAIRS="" IA_VALUE_PAIRS="" scripts/experiments/cleanup.sh tune   # EI only (17 configurations x 3 seeds = 51 jobs)
-#   scripts/experiments/cleanup.sh summary               # tables per folder + ranking per method + stage-B `final` lines
+# Usage (from the repository root, on the cluster).  Protocol, one stage at a time:
+#   A1  PPO tuning:  learning rate x entropy x rollout length (PPO_LRS x PPO_ENTS x PPO_ROLLOUTS, 12 settings) on a few
+#       anchor configurations (PPO_ANCHORS: plain PPO, EI imagined/other alpha 1, EI value alpha 1), PPO_SEEDS each:
+#         scripts/experiments/cleanup.sh ppo                 # 12 settings x 3 anchors x 3 seeds = 108 jobs, one folder per setting
+#       -> `summary` ranks every anchor over the settings; pick ONE setting for everything that follows (fair comparison),
+#          and put it into TRAIN_ARGS, e.g.  export TRAIN_ARGS="--num-envs 8 --num-steps 512 --num-minibatches 4"
+#                                             PPO_SETTINGS="1e-3:0.01"
+#   A2  method hyper-parameters at that setting (alpha grids of all EI modes, the phi = 0 control, the true-reward reference;
+#       IA rows unless IA_PAIRS="" IA_VALUE_PAIRS=""):
+#         IA_PAIRS="" IA_VALUE_PAIRS="" scripts/experiments/cleanup.sh tune      # EI only: 17 configurations x 3 seeds = 51 jobs
+#         scripts/experiments/cleanup.sh tune                                    # EI + IA: 29 configurations x 3 seeds = 87 jobs
+#       then the imagined-specific knobs around the winner:
+#         scripts/experiments/cleanup.sh sweep "--imagined-lambda:0.95,0.99" "--reward-model-replay:0,2048" -- <configuration>
+#   C   winners on fresh seeds:  FINAL_SEEDS=7-14 scripts/experiments/cleanup.sh final <configuration>   (lines printed by `summary`)
+#   Other subcommands:
+#   scripts/experiments/cleanup.sh grids                 # write the A2 grid file(s) only (inspect, count jobs)
+#   scripts/experiments/cleanup.sh baseline              # plain PPO + EI/IA with true rewards only (cheap check)
+#   scripts/experiments/cleanup.sh summary               # tables per folder + ranking per method + `final` lines for the winners
 #   STEPS=3000000 TIME=06:00:00 FINAL_SEEDS=7-14 scripts/experiments/cleanup.sh final --formulation ei --signal imagined \
 #       --imagined-critic other --social-scale --alpha 1 --imagined-warmup 50 --reward-model-replay 2048
 #   scripts/experiments/cleanup.sh sweep "--imagined-lambda:0.95,0.99" "--reward-model-replay:0,2048" -- <configuration>
 #
-# Budget: about 260 steps/s for imagined/other and 730 for plain PPO on 2 laptop cores (8 envs x 256 steps, small CNN);
-# 3M steps is therefore 1-3.5 h per job on the laptop and roughly twice that on the cluster.  TIME defaults to 10 h.
+# Budget: about 260 steps/s for imagined/other and 730 for plain PPO on 2 laptop cores (8 envs x 256 steps, small CNN),
+# roughly half that on cluster cores: 5M steps is 4 h (plain PPO) to 11 h (imagined/other) per job.  TIME defaults to 14 h.
 #
 # Metrics to read (charts/<key>/<agent> from the environment's episode statistics, plus the usual ones):
 #   collective_return   apples eaten per episode by all agents (the public good works iff this goes up)
@@ -59,12 +71,19 @@ SEEDS=${SEEDS:-"1 2 3"}
 FINAL_SEEDS=${FINAL_SEEDS:-"4-11"}
 NUM_AGENTS=${NUM_AGENTS:-3}
 MAX_CYCLES=${MAX_CYCLES:-50}
-STEPS=${STEPS:-3000000}
-TIME=${TIME:-10:00:00}   # imagined/other runs at ~260 steps/s on 2 laptop cores (3M steps = 3.2 h); cluster cores are slower
+STEPS=${STEPS:-5000000}
+TIME=${TIME:-14:00:00}   # imagined/other runs at ~260 steps/s on 2 laptop cores (5M steps = 5.3 h); cluster cores are slower
 CONCURRENT=${CONCURRENT:-50}
 PPO_SETTINGS=${PPO_SETTINGS:-"1e-3:0.01"}   # "lr:ent" pairs; one grid file / result folder per pair
 TRAIN_ARGS=${TRAIN_ARGS:-"--num-envs 8 --num-steps 256 --num-minibatches 4"}
-IMAGINED_ARGS=${IMAGINED_ARGS:-"--imagined-warmup 50 --reward-model-replay 2048"}
+WARMUP_STEPS=${WARMUP_STEPS:-102400}   # imagined: plain-PPO warm-up while the reward model learns, in environment steps
+REPLAY=${REPLAY:-2048}                 # imagined: --reward-model-replay capacity (0 = off)
+# stage A1 (`ppo`): PPO grid on a few anchor configurations
+PPO_LRS=${PPO_LRS:-"2.5e-4 1e-3"}
+PPO_ENTS=${PPO_ENTS:-"0.01 0.05"}
+PPO_ROLLOUTS=${PPO_ROLLOUTS:-"128 256 512"}   # --num-steps per env copy (8 envs: batches of 1024 / 2048 / 4096)
+PPO_ANCHORS=${PPO_ANCHORS-"--formulation none|--formulation ei --signal imagined --imagined-critic other --social-scale --alpha 1|--formulation ei --signal value --social-scale --alpha 1"}
+PPO_SEEDS=${PPO_SEEDS:-"1-3"}
 # alpha grids (relative weights where --social-scale is on; reward units for shaped / reward)
 OTHER_ALPHAS=${OTHER_ALPHAS:-"0.5 1 2"}
 NONE_ALPHAS=${NONE_ALPHAS:-"1 2"}
@@ -74,11 +93,18 @@ CONTROL_ALPHAS=${CONTROL_ALPHAS:-"1 2"}
 REWARD_ALPHAS=${REWARD_ALPHAS:-"0.03 0.1 0.3"}
 IA_PAIRS=${IA_PAIRS-"5:0.05 1:0.05 0.05:5 0.05:1 1:1"}     # alpha(envy):beta(guilt); 5:0.05 = Hughes et al. 2018
 IA_VALUE_PAIRS=${IA_VALUE_PAIRS-"1:0.1 2:0.2"}
-PPO_SEEDS=${PPO_SEEDS:-"4-6"}
 TAG=${TAG:-cleanup}
 LAST=${LAST:-20}
 SUMMARY_TAGS="charts/collective_return charts/equality charts/waste_density/player_0 charts/apple_prob/player_0 charts/clean_actions/player_0 charts/clean_actions/player_1 charts/clean_actions/player_2"
 COMMON="--env-id cleanup --num-agents $NUM_AGENTS --max-cycles $MAX_CYCLES --total-timesteps $STEPS"
+
+# imagined_args "<train args>": --imagined-warmup as iterations covering WARMUP_STEPS at that rollout size, plus the replay
+imagined_args() {
+  local envs steps
+  envs=$(echo "$1" | sed -n 's/.*--num-envs \([0-9]*\).*/\1/p'); steps=$(echo "$1" | sed -n 's/.*--num-steps \([0-9]*\).*/\1/p')
+  envs=${envs:-1}; steps=${steps:-512}
+  echo "--imagined-warmup $(( (WARMUP_STEPS + envs * steps - 1) / (envs * steps) )) --reward-model-replay $REPLAY"
+}
 
 GRIDS=()
 # make_grids [baseline-only]: one grid file per PPO setting
@@ -91,6 +117,7 @@ make_grids() {
     local lr="${setting%%:*}" ent="${setting#*:}" sfx=""
     [ "$n_settings" -gt 1 ] && sfx="_lr${lr}_ent${ent}"
     local extra="$TRAIN_ARGS --learning-rate $lr --ent-coef $ent"
+    local IMAGINED_ARGS; IMAGINED_ARGS=$(imagined_args "$extra")
     local g="grids/${TAG}_$([ -n "$only_baseline" ] && echo baseline || echo stageA)${sfx}.txt"
     : > "$g"
     local mg="$PY scripts/make_grid.py $COMMON --seeds $SEEDS"
@@ -125,6 +152,32 @@ case "${1:-}" in
   baseline)
     make_grids baseline
     for g in "${GRIDS[@]}"; do scripts/slurm/submit.sh "$g" "$CONCURRENT" --time="$TIME"; done ;;
+  ppo)
+    # stage A1: PPO_LRS x PPO_ENTS x PPO_ROLLOUTS, each on every anchor configuration (PPO_ANCHORS, '|'-separated) and
+    # PPO_SEEDS; one grid file / result folder per PPO setting: $RUN_ROOT/${TAG}_ppo_lr<lr>_ent<ent>_T<rollout>
+    mkdir -p grids
+    IFS='|' read -r -a anchors <<< "$PPO_ANCHORS"
+    seeds_list=$(seq "${PPO_SEEDS%-*}" "${PPO_SEEDS#*-}" | tr '\n' ' ')
+    total=0
+    for T in $PPO_ROLLOUTS; do
+      for lr in $PPO_LRS; do
+        for ent in $PPO_ENTS; do
+          g="grids/${TAG}_ppo_lr${lr}_ent${ent}_T${T}.txt"
+          extra="--num-envs 8 --num-steps $T --num-minibatches 4 --learning-rate $lr --ent-coef $ent"
+          im=$(imagined_args "$extra")
+          : > "$g"
+          for conf in "${anchors[@]}"; do
+            line_extra="$extra"
+            [[ "$conf" == *"--signal imagined"* ]] && line_extra="$extra $im"
+            for seed in $seeds_list; do echo "$COMMON $line_extra $conf --seed $seed" >> "$g"; done
+          done
+          n=$(grep -c . "$g"); total=$(( total + n ))
+          echo "$g: $n jobs"
+          [ "${DRY_RUN:-}" = 1 ] || scripts/slurm/submit.sh "$g" "$CONCURRENT" --time="$TIME"
+        done
+      done
+    done
+    echo "stage A1: $total jobs -> $RUN_ROOT/${TAG}_ppo_*" ;;
   final)
     shift
     [ $# -gt 0 ] || { echo "usage: $0 final <train.py args, e.g. --formulation ei --signal imagined --imagined-critic other --social-scale --alpha 1>"; exit 1; }
@@ -162,6 +215,16 @@ case "${1:-}" in
       echo "=== $(basename "$d")"
       $PY scripts/summarize_runs.py "$d" --last "$LAST" --csv "$(basename "$d").csv" --tags $SUMMARY_TAGS
     done
+    PPO_DIRS=$(ls -d "$RUN_ROOT/${TAG}_ppo_"* 2>/dev/null || true)
+    if [ -n "$PPO_DIRS" ]; then
+      echo "=== stage A1: PPO settings (rows = lr / ent / rollout folders) per anchor configuration"
+      # shellcheck disable=SC2086
+      $PY scripts/summarize_runs.py $PPO_DIRS --last "$LAST" --csv "${TAG}_ppo.csv" --tags $SUMMARY_TAGS
+      echo "=== stage A1: best PPO setting per anchor (mean - std of the final collective return)"
+      # shellcheck disable=SC2086
+      $PY scripts/best_configs.py $PPO_DIRS --last "$LAST" --top "${TOP:-6}" --final-time "$TIME" \
+          --tags charts/collective_return charts/equality charts/clean_actions/player_0 charts/waste_density/player_0
+    fi
     DIRS=$(ls -d "$RUN_ROOT/${TAG}_baseline"* "$RUN_ROOT/${TAG}_stageA"* "$RUN_ROOT/${TAG}_sweep_"* 2>/dev/null || true)
     if [ -n "$DIRS" ]; then
       echo "=== best configuration per method (all folders), ranked by final collective return (mean - std over seeds)"
