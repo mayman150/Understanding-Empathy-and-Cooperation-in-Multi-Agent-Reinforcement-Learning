@@ -42,6 +42,11 @@ Signals
       to the advantage.  With lambda = 1 this is the policy gradient of ``J_i + alpha * J_j^imagined``;
       the value function plays its usual role (bootstrap / baseline of a return made of
       outcomes) instead of standing in for the reward.
+    * ``none``: the ablation of ``other`` without a critic: ``z[i, j]`` is the lambda-discounted sum of
+      *j*'s imagined rewards from ``t`` on (``delta = rhat_ij``, no baseline, no bootstrap), so the
+      consequences of my action that arrive after the rollout window, or that the critic would carry
+      through the bootstrap, are not credited.  Comparing ``none`` with ``other`` measures what the
+      value function on the other's observation contributes.
 
 Because all signals share :func:`social_term`, comparisons differ only in what ``z`` is and
 where the term enters (policy-gradient coefficient vs. reward).  :func:`standardize` implements
@@ -55,7 +60,8 @@ import torch
 
 FORMULATIONS = ("none", "ei", "svo", "sia", "ia")
 SIGNALS = ("value", "reward", "imagined")
-IMAGINED_CRITICS = ("other", "shaped")
+IMAGINED_CRITICS = ("other", "shaped", "none")
+AGGREGATES = ("mean", "sum")
 
 
 def standardize(x: torch.Tensor, dims: tuple[int, ...], eps: float = 1e-6) -> torch.Tensor:
@@ -84,14 +90,19 @@ def social_term(
     alpha: torch.Tensor,
     beta: torch.Tensor,
     phi: torch.Tensor,
+    aggregate: str = "mean",
 ) -> torch.Tensor:
     """``F`` of shape ``(..., N)`` from ``z`` of shape ``(..., N, N)`` (``z[..., i, j]`` = i's estimate of j).
 
-    ``alpha, beta, phi`` are per-agent tensors of shape ``(N,)`` (broadcast over leading dims).
+    ``alpha, beta, phi`` are per-agent tensors of shape ``(N,)`` (broadcast over leading dims).  ``aggregate``
+    says how the ``N - 1`` others are combined: ``"mean"`` (the formulas above, ``zbar_i`` and the ``1/(N-1)`` of IA)
+    or ``"sum"`` (every other agent enters with weight ``alpha`` / ``beta``; identical for ``N = 2``).
     The result is detached: it is a coefficient / reward, not something to back-propagate through.
     """
     if formulation not in FORMULATIONS:
         raise ValueError(f"unknown formulation {formulation!r}; choose from {FORMULATIONS}")
+    if aggregate not in AGGREGATES:
+        raise ValueError(f"unknown aggregate {aggregate!r}; choose from {AGGREGATES}")
     z = z.detach()
     N = z.shape[-1]
     if z.shape[-2] != N:
@@ -106,18 +117,19 @@ def social_term(
     phi = phi.to(z.device)
     eye = torch.eye(N, dtype=torch.bool, device=z.device)
     z_self = z.diagonal(dim1=-2, dim2=-1)  # (..., N)
-    z_others_mean = z.masked_fill(eye, 0.0).sum(dim=-1) / (N - 1)
+    denom = (N - 1) if aggregate == "mean" else 1
+    z_others = z.masked_fill(eye, 0.0).sum(dim=-1) / denom  # mean (or sum) over the others
 
     if formulation == "ei":
-        return alpha * z_others_mean
+        return alpha * z_others
     if formulation == "svo":
-        return alpha * (torch.cos(phi) * z_self + torch.sin(phi) * z_others_mean)
+        return alpha * (torch.cos(phi) * z_self + torch.sin(phi) * z_others)
     if formulation == "sia":
-        return -alpha * torch.abs(z_self - z_others_mean)
+        return -alpha * torch.abs(z_self - z_others)
     if formulation == "ia":
         diff = z - z_self.unsqueeze(-1)  # [..., i, j] = z_ij - z_ii; zero on the diagonal
-        disadvantageous = torch.relu(diff).sum(dim=-1) / (N - 1)  # others better off than me
-        advantageous = torch.relu(-diff).sum(dim=-1) / (N - 1)  # me better off than others
+        disadvantageous = torch.relu(diff).sum(dim=-1) / denom  # others better off than me
+        advantageous = torch.relu(-diff).sum(dim=-1) / denom  # me better off than others
         return -alpha * disadvantageous - beta * advantageous
     raise AssertionError("unreachable")
 
@@ -139,6 +151,7 @@ class RewardSocialShaper:
         num_envs: int,
         num_agents: int,
         device: torch.device,
+        aggregate: str = "mean",
     ):
         if formulation not in FORMULATIONS:
             raise ValueError(f"unknown formulation {formulation!r}")
@@ -146,6 +159,7 @@ class RewardSocialShaper:
             raise ValueError("reward-based social terms need at least two agents")
         self.formulation = formulation
         self.alpha, self.beta, self.phi = alpha.to(device), beta.to(device), phi.to(device)
+        self.aggregate = aggregate
         self.decay = gamma * lam
         self.num_agents = num_agents
         self.e = torch.zeros(num_envs, num_agents, device=device)
@@ -158,7 +172,7 @@ class RewardSocialShaper:
         """
         self.e = self.decay * self.e * (1.0 - episode_start) + rewards
         z = self.e.unsqueeze(-2).expand(-1, self.num_agents, -1)  # z[e, i, j] = e_j (everyone sees true rewards)
-        return social_term(self.formulation, z, self.alpha, self.beta, self.phi)
+        return social_term(self.formulation, z, self.alpha, self.beta, self.phi, self.aggregate)
 
 
 class ImaginedRewardShaper:
@@ -181,6 +195,7 @@ class ImaginedRewardShaper:
         num_envs: int,
         num_agents: int,
         device: torch.device,
+        aggregate: str = "mean",
     ):
         if formulation not in FORMULATIONS:
             raise ValueError(f"unknown formulation {formulation!r}")
@@ -188,6 +203,7 @@ class ImaginedRewardShaper:
             raise ValueError("social terms need at least two agents")
         self.formulation = formulation
         self.alpha, self.beta, self.phi = alpha.to(device), beta.to(device), phi.to(device)
+        self.aggregate = aggregate
         self.decay = gamma * lam
         self.num_agents = num_agents
         self.e = torch.zeros(num_envs, num_agents, num_agents, device=device)
@@ -197,4 +213,4 @@ class ImaginedRewardShaper:
         reward), ``episode_start: (num_envs, N)`` for the observed agents -> intrinsic reward ``(num_envs, N)``."""
         reset = (1.0 - episode_start).unsqueeze(1)  # (E, 1, N): the trace of observed agent j restarts with j's episode
         self.e = self.decay * self.e * reset + imagined
-        return social_term(self.formulation, self.e, self.alpha, self.beta, self.phi)
+        return social_term(self.formulation, self.e, self.alpha, self.beta, self.phi, self.aggregate)

@@ -1,0 +1,21 @@
+Vendored code: Sequential Social Dilemma games (Clean Up)
+
+Upstream:  https://github.com/eugenevinitsky/sequential_social_dilemma_games   (Eugene Vinitsky et al., MIT)
+Fork used: https://github.com/011235813/sequential_social_dilemma_games         (Jiachen Yang, for
+           "Learning to Incentivize Other Learning Agents", NeurIPS 2020; adds view_size, global_ref_point,
+           cleanup_params and beam_width options and the n_cleaned_each_agent info)
+Maps:      lio/env/maps.py of https://github.com/011235813/lio                   (CLEANUP_10x10_SYM, CLEANUP_SMALL_SYM)
+
+Files: map_env.py, agent.py, cleanup.py (from social_dilemmas/envs/), utility.py (return_view of utility_funcs.py),
+maps.py (social_dilemmas/constants.py CLEANUP_MAP + the LIO maps).
+
+Local changes (the game dynamics are unchanged):
+  * no dependency on Ray RLlib (MapEnv is a plain class), matplotlib, gym or cv2;
+  * an instance random generator (MapEnv.rng, MapEnv.seed()) replaces the global numpy.random / random state
+    used for spawn shuffling, movement-conflict priority, apple / waste spawning and initial orientation;
+  * step() / reset() return each agent's view as a character grid instead of an RGB array (the wrapper in
+    empathy_marl/cleanup.py renders planes or colours); render() returns an RGB array;
+  * MapEnv.seed() also restores the spawn-point list to map order (spawn_point() shuffles it in place, which made
+    seeded episodes depend on earlier unseeded ones), and CleanupEnv no longer appends the 'P' cells a second time
+    (upstream's spawn_points list contained every spawn point twice; spawning itself is unaffected);
+  * the Harvest agent, the planner variant of CleanupEnv and the video helpers are not included.

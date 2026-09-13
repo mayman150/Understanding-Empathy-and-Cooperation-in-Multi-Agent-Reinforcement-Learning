@@ -10,7 +10,8 @@ from empathy_marl.empathy import FORMULATIONS, IMAGINED_CRITICS, SIGNALS
 
 Formulation = Literal["none", "ei", "svo", "sia", "ia"]
 Signal = Literal["value", "reward", "imagined"]
-ImaginedCritic = Literal["other", "shaped"]
+ImaginedCritic = Literal["other", "shaped", "none"]
+SocialAggregate = Literal["mean", "sum"]
 
 
 @dataclass
@@ -36,7 +37,8 @@ class Args:
 
     # --- environment ---------------------------------------------------------------------
     env_id: str = "meltingpot:commons_harvest__open"
-    """`pd` (repeated Prisoner's Dilemma), `coin` (Coin Game, 3x3 grid) or `meltingpot:<substrate>` (e.g. clean_up)"""
+    """`pd` (repeated Prisoner's Dilemma), `coin` (Coin Game, 3x3 grid), `cleanup` (Clean Up, LIO's small fully
+    observable version, `--num-agents` players) or `meltingpot:<substrate>` (e.g. clean_up)"""
     num_envs: int = 1
     """number of parallel copies of the game (each copy contains all agents)"""
     num_cpus: int = 0
@@ -44,9 +46,16 @@ class Args:
     max_cycles: int = 1000
     """episode length: Melting Pot cycles, Prisoner's Dilemma rounds or Coin Game steps (50 in the literature)"""
     num_agents: int = 2
-    """number of players for `pd` / `debug:image` (Melting Pot substrates fix their own player count)"""
+    """number of players for `pd` / `cleanup` / `debug:image` (Melting Pot substrates fix their own player count)"""
     pd_payoffs: tuple[float, float, float, float] = (3.0, 0.0, 4.0, 1.0)
     """Prisoner's Dilemma payoffs (R, S, T, P); with N > 2 players payoffs are averaged over all pairings"""
+    cleanup_map: str = "10x10"
+    """cleanup: `10x10` (LIO, 3 spawn points) | `7x7` (LIO, 2) | `original` (Hughes et al., 5+ players)"""
+    cleanup_obs: Literal["planes", "rgb"] = "planes"
+    """cleanup: egocentric full-map window as one-hot planes [self, others, apple, waste, river, wall, beam] or as RGB
+    (observer drawn in a fixed self colour)"""
+    cleanup_fixed_spawn: bool = False
+    """cleanup: LIO's fixed spawn assignment (agent 0 on the river side) instead of shuffling spawn points per episode"""
 
     # --- policy --------------------------------------------------------------------------
     recurrent: bool = False
@@ -63,7 +72,8 @@ class Args:
     imagined_critic: ImaginedCritic = "other"
     """signal=imagined: `other` = EI/SVO on the GAE advantage of the other's imagined rewards, with the agent's own
     critic on the other's observations as the other's value function (feed-forward only); `shaped` = imagined rewards
-    through the intrinsic-reward path of signal=reward (all formulations, recurrent ok)"""
+    through the intrinsic-reward path of signal=reward (all formulations, recurrent ok); `none` = ablation of `other`
+    without any critic: the other's lambda-discounted sum of imagined rewards (no baseline, no bootstrap), EI/SVO"""
     imagined_warmup: int = 20
     """signal=imagined: iterations during which the reward model trains but the social term is off"""
     imagined_lambda: Optional[float] = None
@@ -71,9 +81,16 @@ class Args:
     imagined return with my critic used only at the rollout boundary, i.e. the reward model without the value idea"""
     reward_model_coef: float = 1.0
     """signal=imagined: weight of the reward-model regression loss (own transitions -> own reward)"""
+    reward_model_replay: int = 0
+    """signal=imagined: per-agent replay buffer (capacity) of the agent's own transitions with non-zero reward, replayed
+    into the reward-model loss so that rare reward events are not forgotten when the agent's behaviour specialises
+    (e.g. an agent that only cleans never eats an apple).  0 = off (recent rollout only)"""
     social_scale: bool = False
     """standardise the own advantage and every z[i, j] over the batch before the social term is formed, so that
     alpha is a weight relative to the agent's own advantage (signal=value and signal=imagined/other)"""
+    social_aggregate: SocialAggregate = "mean"
+    """how the others' terms are combined for N > 2 agents: `mean` over the N-1 others (alpha = weight of the average
+    other; the formulations as written) or `sum` (alpha = weight of each other agent, utilitarian at alpha = 1)"""
     alpha: str = "0.0"
     """strength of the social term; one value for all agents or N comma-separated per-agent values"""
     beta: str = "0.0"
@@ -123,16 +140,20 @@ def resolve(args: Args) -> Args:
         raise ValueError(f"--signal must be one of {SIGNALS}")
     if args.imagined_critic not in IMAGINED_CRITICS:
         raise ValueError(f"--imagined-critic must be one of {IMAGINED_CRITICS}")
-    if args.signal == "imagined" and args.imagined_critic == "other":
+    if args.signal == "imagined" and args.imagined_critic in ("other", "none"):
         if args.formulation in ("sia", "ia"):
             raise ValueError(
-                "--imagined-critic other supports ei and svo only (gap formulations need outcome-level "
+                f"--imagined-critic {args.imagined_critic} supports ei and svo only (gap formulations need outcome-level "
                 "quantities); use --imagined-critic shaped for sia / ia"
             )
-        if args.recurrent:
+        if args.recurrent and args.imagined_critic == "other":
             raise ValueError("--imagined-critic other is implemented for feed-forward agents; use --imagined-critic shaped")
-    if args.imagined_warmup < 0 or args.reward_model_coef < 0:
-        raise ValueError("--imagined-warmup and --reward-model-coef must be >= 0")
+    if args.imagined_warmup < 0 or args.reward_model_coef < 0 or args.reward_model_replay < 0:
+        raise ValueError("--imagined-warmup, --reward-model-coef and --reward-model-replay must be >= 0")
+    if args.social_aggregate not in ("mean", "sum"):
+        raise ValueError("--social-aggregate must be mean or sum")
+    if args.cleanup_obs not in ("planes", "rgb"):
+        raise ValueError("--cleanup-obs must be planes or rgb")
     if args.imagined_lambda is not None and not 0.0 <= args.imagined_lambda <= 1.0:
         raise ValueError("--imagined-lambda must be in [0, 1]")
     if args.num_envs < 1 or args.num_steps < 1 or args.num_minibatches < 1:

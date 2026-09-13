@@ -195,3 +195,81 @@ def test_recurrent_requires_divisible_minibatches(tmp_path):
            "--num-envs", "3", "--num-minibatches", "2"]
     res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=120)
     assert res.returncode != 0 and "divisible" in res.stderr
+
+
+CLEANUP_FAST = ["--env-id", "cleanup", "--num-agents", "3", "--max-cycles", "6", "--num-envs", "2", "--num-steps", "8",
+                "--num-minibatches", "2", "--total-timesteps", "48", "--no-cuda"]
+
+
+@pytest.mark.parametrize(
+    "extra, method",
+    [
+        (["--formulation", "none"], "none"),
+        (["--formulation", "ei", "--signal", "imagined", "--imagined-critic", "other", "--social-scale", "--alpha", "1",
+          "--imagined-warmup", "1", "--reward-model-replay", "64", "--social-aggregate", "sum"], "ei_imagined_other_sc_sum"),
+        (["--formulation", "ia", "--signal", "imagined", "--imagined-critic", "shaped", "--alpha", "1", "--beta", "0.1",
+          "--imagined-warmup", "1"], "ia_imagined_shaped"),
+        (["--formulation", "ei", "--signal", "value", "--social-scale", "--alpha", "1"], "ei_value_sc"),
+        (["--formulation", "ei", "--signal", "reward", "--alpha", "0.1"], "ei_reward"),
+    ],
+)
+def test_train_cleanup_grid_observations(extra, method, tmp_path):
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    out = _run(CLEANUP_FAST + extra, tmp_path)
+    assert "obs=(17, 17, 7) (grid) actions=6" in out and "iteration=3/3" in out
+    run_dirs = glob.glob(str(tmp_path / f"cleanup__{method}__ff__*"))
+    assert len(run_dirs) == 1, glob.glob(str(tmp_path / "*"))
+    acc = EventAccumulator(run_dirs[0], size_guidance={"scalars": 0})
+    acc.Reload()
+    tags = set(acc.Tags()["scalars"])
+    # 6-step episodes -> per-episode Clean Up statistics are logged for every agent
+    assert {"charts/apples/player_0", "charts/clean_actions/player_2", "charts/waste_density/player_1",
+            "charts/collective_return", "charts/equality"} <= tags
+    if "imagined" in method:
+        assert {"imagined/corr/player_0", "losses/reward_model/player_1"} <= tags
+    data = torch.load(os.path.join(run_dirs[0], "agents.pt"), map_location="cpu", weights_only=False)
+    assert data["obs_type"] == "grid"
+    agents = MultiAgents(3, spaces.Box(0.0, 1.0, (17, 17, 7), np.float32), spaces.Discrete(6), "grid",
+                         reward_model="imagined" in method)
+    agents.load_state_dict(data["agents"])
+
+
+def test_train_cleanup_rgb_observations(tmp_path):
+    out = _run(CLEANUP_FAST + ["--cleanup-obs", "rgb", "--formulation", "none"], tmp_path)
+    assert "obs=(17, 17, 3) (grid)" in out and "iteration=3/3" in out
+
+
+def test_train_imagined_without_critic_ablation(tmp_path):
+    """--imagined-critic none: the other's discounted imagined rewards enter the coefficient, no critic involved."""
+    out = _run(COIN_FAST + ["--signal", "imagined", "--imagined-critic", "none", "--social-scale", "--formulation", "ei",
+                            "--alpha", "1", "--imagined-warmup", "1", "--imagined-lambda", "0"], tmp_path)
+    assert "iteration=3/3" in out
+    assert len(glob.glob(str(tmp_path / "coin__ei_imagined_none_sc__*"))) == 1
+    cmd = [sys.executable, os.path.join(ROOT, "train.py"), "--run-dir", str(tmp_path), *COIN_FAST, "--signal", "imagined",
+           "--imagined-critic", "none", "--formulation", "sia", "--alpha", "1"]
+    res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=120)
+    assert res.returncode != 0 and "supports ei and svo" in res.stderr
+
+
+def test_cross_next_values_matches_full_pass_at_episode_boundaries():
+    from train import cross_next_values
+
+    torch.manual_seed(0)
+    T, E, N = 6, 2, 3
+    agents = MultiAgents(N, OBS, spaces.Discrete(2), "vector")
+    obs = torch.rand(T, E, N, 5)
+    next_obs_buf = torch.empty_like(obs)
+    next_obs_buf[:-1] = obs[1:]
+    next_obs_buf[-1] = torch.rand(E, N, 5)
+    episode_end = torch.zeros(T, E, N)
+    episode_end[2, 1] = 1.0  # env 1: all agents' episodes end at t = 2 -> next_obs_buf holds terminal observations
+    episode_end[4, 0, 1] = 1.0  # env 0: only agent 1 (asymmetric end, as the flags are per observed agent)
+    for t, e, j in ((2, 1, 0), (2, 1, 1), (2, 1, 2), (4, 0, 1)):
+        next_obs_buf[t, e, j] = torch.rand(5)
+    with torch.no_grad():
+        v_cross, _ = agents.cross_values(obs.reshape(T * E, N, 5))
+        v_cross = v_cross.reshape(T, E, N, N)
+        fast = cross_next_values(agents, v_cross, next_obs_buf, episode_end)
+        full, _ = agents.cross_values(next_obs_buf.reshape(T * E, N, 5))
+    assert torch.allclose(fast, full.reshape(T, E, N, N), atol=1e-6)

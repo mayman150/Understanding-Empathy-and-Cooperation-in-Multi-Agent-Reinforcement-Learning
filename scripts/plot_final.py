@@ -3,6 +3,9 @@
     python scripts/plot_final.py ~/scratch/MARL/empathy_runs/coin_best_final_* -o figures_coin
     python scripts/plot_final.py ~/scratch/MARL/empathy_runs/coin_best_final_* -o figures_coin --bins 50 --ci 0.9 \
         --metrics charts/collective_return charts/cooperation_rate charts/equality
+    # Clean Up: per-agent statistics without an agent suffix are averaged over the agents
+    python scripts/plot_final.py ~/scratch/MARL/empathy_runs/cleanup_best_final_* -o figures_cleanup \
+        --metrics charts/collective_return charts/equality charts/clean_actions charts/waste_density
 
 Each result folder holds the runs (seeds) of ONE configuration; the method is read from every run's
 ``args.json`` (formulation + signal; SVO with phi = 0 is the own-value control).  Curves are binned by
@@ -40,7 +43,7 @@ from plot_curves import RUN_RE, bin_curve  # noqa: E402
 
 FORMULATION_NAMES = {"ei": "EI", "sia": "SIA", "svo": "SVO", "ia": "IA"}
 FORMULATION_COLOURS = {"ei": "#1f77b4", "sia": "#ff7f0e", "svo": "#2ca02c", "ia": "#d62728"}
-SIGNAL_STYLES = {"value": "-", "reward": "--", "imagined_other": "-.", "imagined_shaped": ":"}
+SIGNAL_STYLES = {"value": "-", "reward": "--", "imagined_other": "-.", "imagined_shaped": ":", "imagined_none": (0, (1, 1))}
 REFERENCE_STYLES = {"none": ("#555555", ":"), "control": ("#999999", "-.")}
 DEFAULT_METRICS = ["charts/collective_return", "charts/cooperation_rate"]
 # two-sided Student t critical values for 95% (index = degrees of freedom); beyond 30 the normal value is used

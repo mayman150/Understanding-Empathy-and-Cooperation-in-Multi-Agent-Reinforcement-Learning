@@ -68,6 +68,7 @@ from empathy_marl.args import Args, resolve
 from empathy_marl.empathy import ImaginedRewardShaper, RewardSocialShaper, parse_per_agent, social_term, standardize
 from empathy_marl.envs import is_prisoners_dilemma, make_envs
 from empathy_marl.metrics import MultiAgentEpisodeStatistics
+from empathy_marl.replay import RewardReplay
 
 
 def make_run_name(args: Args) -> str:
@@ -82,6 +83,8 @@ def make_run_name(args: Args) -> str:
         method = f"{args.formulation}_{args.signal}"
     if args.social_scale and args.formulation != "none" and args.signal in ("value", "imagined"):
         method += "_sc"
+    if args.social_aggregate == "sum" and args.formulation != "none":
+        method += "_sum"
     policy = "lstm" if args.recurrent else "ff"
     params = f"a{args.alpha}_b{args.beta}_p{args.phi}".replace(",", "-")
     return f"{env_tag}__{method}__{policy}__{params}__s{args.seed}__{int(time.time())}"
@@ -114,6 +117,31 @@ def cross_gae(
         delta = rewards[t] + gamma * next_values[t] * boot - values[t]
         adv[t] = last = delta + gamma * lam * cont * last
     return adv
+
+
+@torch.no_grad()
+def cross_next_values(
+    agents, v_cross: torch.Tensor, next_obs_buf: torch.Tensor, episode_end: torch.Tensor
+) -> torch.Tensor:
+    """``V_i`` of every agent ``j``'s *true* next observation, ``(T, E, N, N)``, from the cross values of the stored
+    observations plus the boundary rows (feed-forward critics only).
+
+    ``next_obs_buf[t]`` equals ``obs[t + 1]`` except where ``j``'s episode ended at ``t`` (there it holds the terminal
+    observation) and at ``t = T - 1``, so ``V_i(next_obs_buf[t, e, j]) = v_cross[t + 1, e, i, j]`` everywhere else.
+    Only the exceptional rows are evaluated, which halves the cost of the cross-value pass (the dominant cost of
+    ``--imagined-critic other`` on image-like observations).
+    """
+    T, E, N, _ = v_cross.shape
+    out = torch.empty_like(v_cross)
+    out[:-1] = v_cross[1:]
+    need = episode_end.bool().clone()
+    need[-1] = True
+    idx = need.nonzero(as_tuple=False)  # rows (t, e, j) whose next observation is not obs[t + 1]
+    if idx.numel():
+        x = next_obs_buf[idx[:, 0], idx[:, 1], idx[:, 2]]  # (K, *obs)
+        vals = torch.stack([agent.get_value(x)[0] for agent in agents.agents], dim=1)  # (K, N): [k, i] = V_i(x_k)
+        out[idx[:, 0], idx[:, 1], :, idx[:, 2]] = vals
+    return out
 
 
 @torch.no_grad()
@@ -220,6 +248,9 @@ if __name__ == "__main__":
         max_cycles=args.max_cycles,
         num_agents=args.num_agents,
         pd_payoffs=args.pd_payoffs,
+        cleanup_map=args.cleanup_map,
+        cleanup_obs=args.cleanup_obs,
+        cleanup_fixed_spawn=args.cleanup_fixed_spawn,
     )
     envs = MultiAgentEpisodeStatistics(bundle.envs, args.num_envs, bundle.num_agents)
     E, N, T = args.num_envs, bundle.num_agents, args.num_steps
@@ -231,7 +262,9 @@ if __name__ == "__main__":
     use_value_signal = args.formulation != "none" and args.signal == "value"
     use_reward_signal = args.formulation != "none" and args.signal == "reward"
     use_imagined = args.signal == "imagined"  # the reward model is trained even for formulation=none (diagnostics)
-    imagined_other = use_imagined and args.formulation != "none" and args.imagined_critic == "other"
+    # `other`: the other's imagined advantage under MY critic; `none`: the same without a critic (no baseline / bootstrap)
+    imagined_other = use_imagined and args.formulation != "none" and args.imagined_critic in ("other", "none")
+    imagined_no_critic = imagined_other and args.imagined_critic == "none"
     imagined_shaped = use_imagined and args.formulation != "none" and args.imagined_critic == "shaped"
     print(f"env={args.env_id} agents={N} envs={E} obs={obs_shape} ({bundle.obs_type}) actions={bundle.single_action_space.n}")
     print(
@@ -239,6 +272,8 @@ if __name__ == "__main__":
         f"phi={phi.tolist()} recurrent={args.recurrent}"
         + (f" imagined_critic={args.imagined_critic} warmup={args.imagined_warmup}" if use_imagined else "")
         + (" social_scale" if args.social_scale else "")
+        + (f" aggregate={args.social_aggregate}" if N > 2 else "")
+        + (f" reward_model_replay={args.reward_model_replay}" if use_imagined and args.reward_model_replay else "")
     )
 
     agents = MultiAgents(
@@ -252,12 +287,12 @@ if __name__ == "__main__":
     ).to(device)
     optimizer = optim.Adam(agents.parameters(), lr=args.learning_rate, eps=1e-5)
     reward_shaper = (
-        RewardSocialShaper(args.formulation, alpha, beta, phi, args.gamma, args.reward_lambda, E, N, device)
+        RewardSocialShaper(args.formulation, alpha, beta, phi, args.gamma, args.reward_lambda, E, N, device, args.social_aggregate)
         if use_reward_signal
         else None
     )
     imagined_shaper = (
-        ImaginedRewardShaper(args.formulation, alpha, beta, phi, args.gamma, args.reward_lambda, E, N, device)
+        ImaginedRewardShaper(args.formulation, alpha, beta, phi, args.gamma, args.reward_lambda, E, N, device, args.social_aggregate)
         if imagined_shaped
         else None
     )
@@ -279,6 +314,11 @@ if __name__ == "__main__":
     # `obs[t+1]` is already the reset observation) and the real-termination flags, for the reward model / cross GAE
     next_obs_buf = torch.zeros_like(obs) if use_imagined else None
     term_buf = torch.zeros((T, E, N), device=device)
+    reward_replay = (
+        RewardReplay(args.reward_model_replay, N, obs_shape, obs_dtype, device)
+        if use_imagined and args.reward_model_replay > 0
+        else None
+    )
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -430,14 +470,18 @@ if __name__ == "__main__":
                     agents, obs, next_obs, dones, next_done, cross_lstm_state, args.cross_value_chunk
                 )
                 z = standardize(v_next, dims=(0, 1)) if args.social_scale else v_next  # per (i, j) over the batch
-                social[:] = social_term(args.formulation, z, alpha, beta, phi) * (1.0 - episode_end)
+                social[:] = social_term(args.formulation, z, alpha, beta, phi, args.social_aggregate) * (1.0 - episode_end)
             # signal=imagined, critic=other: z_ij = GAE of j's imagined rewards under MY critic on j's observations
             # (delta = rhat_ij + gamma V_i(o_j') - V_i(o_j)), z_ii = my own advantage; F_i(z) is added to the advantage
             if imagined_other:
-                flat_obs = obs.reshape((T * E, N) + obs_shape)
-                flat_next = next_obs_buf.reshape((T * E, N) + obs_shape)
-                v_cross, _ = agents.cross_values(flat_obs)  # feed-forward only (resolve() enforces it)
-                v_cross_next, _ = agents.cross_values(flat_next)
+                if imagined_no_critic:  # ablation: lambda-discounted sum of imagined rewards, no baseline / bootstrap
+                    v_cross = torch.zeros((T * E, N, N), device=device)
+                    v_cross_next = torch.zeros_like(v_cross)
+                else:
+                    flat_obs = obs.reshape((T * E, N) + obs_shape)
+                    v_cross, _ = agents.cross_values(flat_obs)  # feed-forward only (resolve() enforces it)
+                    v_cross = v_cross.reshape(T, E, N, N)
+                    v_cross_next = cross_next_values(agents, v_cross, next_obs_buf, episode_end)
                 adv_cross = cross_gae(
                     rhat, v_cross.reshape(T, E, N, N), v_cross_next.reshape(T, E, N, N),
                     term_buf, episode_end, args.gamma,
@@ -446,7 +490,7 @@ if __name__ == "__main__":
                 z = torch.where(eye, scaled_advantages.unsqueeze(-1).expand(-1, -1, -1, N), adv_cross)
                 if args.social_scale:
                     z = torch.where(eye, z, standardize(adv_cross, dims=(0, 1)))
-                social[:] = social_term(args.formulation, z, alpha, beta, phi) if social_on else 0.0
+                social[:] = social_term(args.formulation, z, alpha, beta, phi, args.social_aggregate) if social_on else 0.0
             # signal=reward / imagined-shaped: the intrinsic term already entered `rewards` (and GAE)
             advantage_coef = scaled_advantages + social if (use_value_signal or imagined_other) else advantages
 
@@ -461,6 +505,8 @@ if __name__ == "__main__":
         if use_imagined:  # reward-model regression targets: own transitions -> own environment reward
             b_next_obs = next_obs_buf.reshape((T * E, N) + obs_shape)
             b_env_rewards = env_rewards.reshape(T * E, N)
+            if reward_replay is not None:
+                reward_replay.add_rollout(obs, actions, next_obs_buf, env_rewards)
 
         # Optimizing the policy and value network ---------------------------------------------------
         if args.recurrent:
@@ -525,6 +571,8 @@ if __name__ == "__main__":
                 if use_imagined:  # reward model: regress my own reward on my own observation transition
                     pred_reward = agents.predict_own_rewards(b_obs[mb_inds], b_actions[mb_inds], b_next_obs[mb_inds])
                     rm_loss = 0.5 * ((pred_reward - b_env_rewards[mb_inds]) ** 2).mean(dim=0)
+                    if reward_replay is not None:  # keep rare reward events in the training distribution
+                        rm_loss = rm_loss + reward_replay.loss(agents, args.minibatch_size // 4)
                     loss_per_agent = loss_per_agent + args.reward_model_coef * rm_loss
                 loss = loss_per_agent.sum()  # networks are independent, so the sum decouples
 

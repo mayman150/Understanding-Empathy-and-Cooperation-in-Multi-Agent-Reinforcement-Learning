@@ -14,6 +14,11 @@ Supported ``env_id`` values
 ---------------------------
 * ``pd`` / ``prisoners_dilemma``          repeated Prisoner's Dilemma (N players, default 2)
 * ``coin`` / ``coin_game``                Coin Game (Lerer & Peysakhovich 2017), 2 players on a 3x3 grid
+* ``cleanup`` / ``clean_up``              Clean Up (Hughes et al. 2018) in the small fully observable
+                                          configuration of Yang et al. 2020 (LIO): 10x10 map, ``num_agents``
+                                          players (3), egocentric plane observations covering the whole map
+                                          (``obs_type="grid"``, small CNN); ``cleanup_map`` / ``cleanup_obs`` /
+                                          ``cleanup_fixed_spawn`` select the map, planes vs RGB and LIO's fixed spawns
 * ``meltingpot:<substrate>``              any Melting Pot substrate through shimmy, e.g.
                                           ``meltingpot:commons_harvest__open``,
                                           ``meltingpot:clean_up``
@@ -35,11 +40,13 @@ import numpy as np
 import supersuit as ss
 from gymnasium import spaces
 
+from empathy_marl.cleanup import CleanupEnv
 from empathy_marl.coin_game import CoinGame
 from empathy_marl.prisoners_dilemma import RepeatedPrisonersDilemma
 
 PD_IDS = ("pd", "prisoners_dilemma", "repeated_prisoners_dilemma")
 COIN_IDS = ("coin", "coin_game", "coingame")
+CLEANUP_IDS = ("cleanup", "clean_up", "cleanup_game")
 DEBUG_IMAGE_ID = "debug:image"
 MELTINGPOT_PREFIX = "meltingpot:"
 MELTINGPOT_OBS_KEY = "RGB"
@@ -54,7 +61,7 @@ class EnvBundle:
     agent_names: list[str]
     single_observation_space: spaces.Box  # what one agent's policy sees
     single_action_space: spaces.Discrete
-    obs_type: str  # "image" (uint8 HWC) or "vector" (float32)
+    obs_type: str  # "image" (uint8 HWC, Atari-size), "grid" (small HWC planes / colours, float32) or "vector" (float32)
     extract_obs: Callable[[Any], np.ndarray]  # raw vec-env obs -> (num_envs*num_agents, *obs_shape)
     cooperate_action: Optional[int] = None  # for cooperation-rate logging (PD)
 
@@ -92,6 +99,10 @@ def is_coin_game(env_id: str) -> bool:
     return env_id.lower() in COIN_IDS
 
 
+def is_cleanup(env_id: str) -> bool:
+    return env_id.lower() in CLEANUP_IDS
+
+
 def _vector_bundle(par_env, env_id: str, num_envs: int, num_cpus: int, cooperate_action: Optional[int]) -> EnvBundle:
     """Bundle for a ParallelEnv with flat float32 observations (PD, Coin Game)."""
     agent_names = list(par_env.possible_agents)
@@ -123,10 +134,27 @@ def make_envs(
     num_agents: int = 2,
     pd_payoffs: tuple[float, float, float, float] = (3.0, 0.0, 4.0, 1.0),
     render_mode: Optional[str] = None,
+    cleanup_map: str = "10x10",
+    cleanup_obs: str = "planes",
+    cleanup_fixed_spawn: bool = False,
 ) -> EnvBundle:
-    """``num_agents`` applies to ``pd`` and ``debug:image``; the Coin Game and Melting Pot substrates fix their own player count."""
+    """``num_agents`` applies to ``pd``, ``cleanup`` and ``debug:image``; the Coin Game and Melting Pot substrates fix
+    their own player count."""
     if num_envs < 1:
         raise ValueError("num_envs must be >= 1")
+
+    if is_cleanup(env_id):
+        par_env = CleanupEnv(
+            num_agents=num_agents,
+            num_rounds=max_cycles,
+            map_name=cleanup_map,
+            obs=cleanup_obs,
+            shuffle_spawn=not cleanup_fixed_spawn,
+            render_mode=render_mode,
+        )
+        bundle = _vector_bundle(par_env, env_id, num_envs, num_cpus, CleanupEnv.cooperate_action)
+        bundle.obs_type = "grid"  # HWC planes (float32 0/1) or colours (uint8, scaled by the trunk); small CNN trunk
+        return bundle
 
     if is_prisoners_dilemma(env_id):
         par_env = RepeatedPrisonersDilemma(

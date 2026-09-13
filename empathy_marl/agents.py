@@ -1,7 +1,7 @@
 """Actor-critic networks (CleanRL ``ppo_atari.py`` / ``ppo_atari_lstm.py`` style).
 
-``Agent`` is one independent learner: trunk (Nature-CNN for images, small MLP for
-vectors) -> optional LSTM -> actor / critic heads.  ``MultiAgents`` holds one ``Agent``
+``Agent`` is one independent learner: trunk (Nature-CNN for images, ``GridCNN`` for small
+grid-world windows of planes / colours, small MLP for vectors) -> optional LSTM -> actor / critic heads.  ``MultiAgents`` holds one ``Agent``
 per player (no parameter sharing) and presents batched ``(batch, num_agents, ...)``
 tensors to the training loop.
 
@@ -30,8 +30,8 @@ a regression of the agent's *own* reward on its own observation transition.  App
 another agent's transition, ``f_i(o_j, a_j, o_j')`` is agent ``i``'s imagined reward of agent ``j``
 ("what I would have received in your shoes"); ``MultiAgents.cross_rewards`` computes it for
 all pairs.  For vector observations the model is a small MLP on the raw ``(o, o')`` pair; for
-images it is a head on the (detached) trunk features of both frames, so it never trains
-the trunk.
+grid windows a tiny convolution of its own over the stacked pair (``GridRewardModel``); for
+images a head on the (detached) trunk features of both frames, so it never trains the trunk.
 """
 from __future__ import annotations
 
@@ -75,6 +75,74 @@ class NatureCNN(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.float() / 255.0
         return self.fc(self.conv(x.permute(0, 3, 1, 2)))
+
+
+class GridCNN(nn.Module):
+    """Small convolutional trunk for grid-world windows (``obs_type="grid"``): input ``(B, H, W, C)``.
+
+    Meant for one-hot planes (or per-cell colours) of a few dozen cells a side, e.g. the 17x17x7 Clean Up
+    window, where the Atari trunk's 8x8 / stride-4 filters do not fit.  Two 3x3 convolutions (the second with
+    stride 2 to keep the flattened size small) and one linear layer; ``scale`` divides the input (1/255 for
+    uint8 colours, 1 for 0/1 planes).  Sized for a 10x10 map (about 0.4M parameters; LIO's Clean Up network was
+    a single 6-filter convolution): the social terms evaluate every critic on every agent's observation, so the
+    trunk's cost is paid N^2 times per step.  No normalisation layers (on-policy RL convention).
+    """
+
+    def __init__(self, obs_shape: tuple[int, ...], out_features: int = 128, scale: float = 1.0, channels: tuple[int, int] = (16, 32)):
+        super().__init__()
+        h, w, c = obs_shape
+        self.scale = float(scale)
+        self.conv = nn.Sequential(
+            layer_init(nn.Conv2d(c, channels[0], 3, stride=1, padding=1)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(channels[0], channels[1], 3, stride=2, padding=1)),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+        with torch.no_grad():
+            n_flat = self.conv(torch.zeros(1, c, h, w)).shape[1]
+        self.fc = nn.Sequential(layer_init(nn.Linear(n_flat, out_features)), nn.ReLU())
+        self.out_features = out_features
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.float() * self.scale
+        return self.fc(self.conv(x.permute(0, 3, 1, 2)))
+
+
+class GridRewardModel(nn.Module):
+    """``rhat = f(o, a, o')`` for grid windows: a tiny convolution over the stacked pair ``[o, o']`` plus the action.
+
+    The reward events of these games are local ("the apple under my cell disappeared"), so 3x3 filters over
+    the two frames see them directly; global max- and mean-pooling make the output independent of where in
+    the window the event happens (the observer is at the centre of its own window, but the model is also
+    evaluated on *other* agents' windows).  Own network, trained on the agent's own transitions only; it does
+    not share or train the policy trunk.
+    """
+
+    def __init__(self, obs_shape: tuple[int, ...], num_actions: int, scale: float = 1.0, channels: int = 16, hidden: int = 64):
+        super().__init__()
+        h, w, c = obs_shape
+        self.scale = float(scale)
+        self.num_actions = int(num_actions)
+        self.conv = nn.Sequential(
+            layer_init(nn.Conv2d(2 * c, channels, 3, stride=1, padding=1)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(channels, channels, 3, stride=1, padding=1)),
+            nn.ReLU(),
+        )
+        self.head = nn.Sequential(
+            layer_init(nn.Linear(2 * channels + self.num_actions, hidden)),
+            nn.Tanh(),
+            layer_init(nn.Linear(hidden, 1), std=1.0),
+        )
+
+    def forward(self, x: torch.Tensor, action: torch.Tensor, x_next: torch.Tensor) -> torch.Tensor:
+        """``x, x_next: (B, H, W, C)``, ``action: (B,)`` integer -> ``(B,)``."""
+        pair = torch.cat([x.float(), x_next.float()], dim=-1).permute(0, 3, 1, 2) * self.scale
+        feats = self.conv(pair)
+        pooled = torch.cat([feats.amax(dim=(2, 3)), feats.mean(dim=(2, 3))], dim=-1)
+        a = torch.nn.functional.one_hot(action.long(), self.num_actions).float()
+        return self.head(torch.cat([pooled, a], dim=-1)).squeeze(-1)
 
 
 class MLP(nn.Module):
@@ -144,8 +212,11 @@ class Agent(nn.Module):
         reward_model: bool = False,
     ):
         super().__init__()
+        grid_scale = 1.0 / 255.0 if np.issubdtype(observation_space.dtype, np.integer) else 1.0
         if obs_type == "image":
             self.trunk: nn.Module = NatureCNN(observation_space.shape)
+        elif obs_type == "grid":
+            self.trunk = GridCNN(observation_space.shape, scale=grid_scale)
         elif obs_type == "vector":
             self.trunk = MLP(observation_space.shape)
         else:
@@ -162,11 +233,12 @@ class Agent(nn.Module):
             head_in = lstm_hidden_size
         self.actor = layer_init(nn.Linear(head_in, int(action_space.n)), std=0.01)
         self.critic = layer_init(nn.Linear(head_in, 1), std=1)
-        self.reward_model: Optional[RewardModel] = (
-            RewardModel(observation_space.shape, int(action_space.n), self.trunk if obs_type == "image" else None)
-            if reward_model
-            else None
-        )
+        self.reward_model: Optional[nn.Module] = None
+        if reward_model:
+            if obs_type == "grid":
+                self.reward_model = GridRewardModel(observation_space.shape, int(action_space.n), scale=grid_scale)
+            else:
+                self.reward_model = RewardModel(observation_space.shape, int(action_space.n), self.trunk if obs_type == "image" else None)
 
     def predict_reward(self, x: torch.Tensor, action: torch.Tensor, x_next: torch.Tensor) -> torch.Tensor:
         """Imagined reward for the transition ``(x, action) -> x_next`` (``x, x_next: (B, *obs)``, ``action: (B,)``)."""

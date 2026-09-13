@@ -95,6 +95,8 @@ def main() -> None:
     p.add_argument("--rank", choices=["mean", "lcb"], default="lcb",
                    help="rank by the seed mean, or by mean - std (lcb: prefers configurations that are good on every seed)")
     p.add_argument("--min-coop", type=float, default=None, help="only rank groups whose mean cooperation rate (player_0) exceeds this")
+    p.add_argument("--final-script", default=None, help="experiment script for the printed stage-B lines (default: from env_id)")
+    p.add_argument("--final-time", default="01:00:00", help="SLURM time limit in the printed stage-B lines")
     p.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1))
     a = p.parse_args()
     tags = list(dict.fromkeys([a.metric, *a.tags]))
@@ -163,11 +165,19 @@ def main() -> None:
                 conf += f" --phi {args['phi']}"
             if args["signal"] == "imagined":
                 conf += f" --imagined-critic {args.get('imagined_critic', 'other')} --imagined-warmup {args.get('imagined_warmup', 20)}"
+                if args.get("reward_model_replay"):
+                    conf += f" --reward-model-replay {args['reward_model_replay']}"
+                if args.get("imagined_lambda") is not None:
+                    conf += f" --imagined-lambda {fmt(args['imagined_lambda'])}"
             if args.get("social_scale"):
                 conf += " --social-scale"
+            if args.get("social_aggregate", "mean") != "mean":
+                conf += f" --social-aggregate {args['social_aggregate']}"
+        env = str(args.get("env_id", "coin")).lower()
+        script = a.final_script or ("cleanup" if env in ("cleanup", "clean_up") else "coin")
         print(f"# {method}: {a.metric} = {r[a.metric][0]:.2f} +/- {r[a.metric][1]:.2f} (n={r['n']})")
-        print(f'TAG=coin_best FINAL_SEEDS=7-14 STEPS={args["total_timesteps"]} TIME=01:00:00 TRAIN_ARGS="{train_args}" \\\n'
-              f"    scripts/experiments/coin.sh final {conf}")
+        print(f'TAG={script}_best FINAL_SEEDS=7-14 STEPS={args["total_timesteps"]} TIME={a.final_time} TRAIN_ARGS="{train_args}" \\\n'
+              f"    scripts/experiments/{script}.sh final {conf}")
 
 
 if __name__ == "__main__":

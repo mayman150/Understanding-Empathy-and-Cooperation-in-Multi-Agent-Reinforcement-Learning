@@ -48,10 +48,13 @@ def fmt(x: float) -> str:
 
 def build_grid(args: argparse.Namespace) -> list[str]:
     common = f"--env-id {args.env_id} --max-cycles {args.max_cycles} --total-timesteps {args.total_timesteps}"
-    if args.env_id.lower() in ("pd", "prisoners_dilemma", "repeated_prisoners_dilemma") or args.env_id.startswith("debug"):
+    if (args.env_id.lower() in ("pd", "prisoners_dilemma", "repeated_prisoners_dilemma", "cleanup", "clean_up")
+            or args.env_id.startswith("debug")):
         common += f" --num-agents {args.num_agents}"
     if args.extra:
         common += " " + args.extra.strip()
+
+    ia_pairs = getattr(args, "ia_pairs", None)
 
     def alpha_arg(a: float) -> str:
         # --mixed "0,{a}" -> per-agent list with the grid alpha substituted
@@ -75,7 +78,7 @@ def build_grid(args: argparse.Namespace) -> list[str]:
                             f"{common} --formulation svo --signal {signal} --alpha {alpha_arg(a)} "
                             f"--phi {fmt(ALL_PHIS[name])} --seed {seed}"
                         )
-                if "ia" in args.formulations:
+                if "ia" in args.formulations and not ia_pairs:
                     for ratio in args.beta_ratios:
                         beta = a * float(ratio)
                         beta_arg = args.mixed.replace("{a}", fmt(beta)) if args.mixed else fmt(beta)
@@ -83,6 +86,13 @@ def build_grid(args: argparse.Namespace) -> list[str]:
                             f"{common} --formulation ia --signal {signal} --alpha {alpha_arg(a)} "
                             f"--beta {beta_arg} --seed {seed}"
                         )
+            if "ia" in args.formulations and ia_pairs:  # explicit (alpha, beta) pairs instead of alphas x ratios
+                for pair in ia_pairs:
+                    a_str, b_str = pair.split(":")
+                    lines.append(
+                        f"{common} --formulation ia --signal {signal} --alpha {alpha_arg(float(a_str))} "
+                        f"--beta {fmt(float(b_str))} --seed {seed}"
+                    )
     return lines
 
 
@@ -127,6 +137,8 @@ def main() -> None:
     p.add_argument("--phis", nargs="+", default=list(PHIS), choices=list(ALL_PHIS),
                    help="SVO angles; \"0\" is the own-value control (no other-regarding term)")
     p.add_argument("--beta-ratios", nargs="+", type=Fraction, default=BETA_RATIOS, help="beta = ratio * alpha")
+    p.add_argument("--ia-pairs", nargs="*", default=None,
+                   help='IA as explicit "alpha:beta" pairs (e.g. 5:0.05 0.05:5), replacing --alphas x --beta-ratios for ia')
     p.add_argument("--seeds", nargs="+", type=int, default=[1, 2, 3])
     p.add_argument("--mixed", default="", help='per-agent alpha template, e.g. "0,{a}" ({a} = grid alpha)')
     p.add_argument("--extra", default="", help="extra train.py arguments appended to every line")

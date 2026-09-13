@@ -43,15 +43,19 @@ However, there is a single blue curve that seems to achieve a much higher reward
 train.py                 single entrypoint: independent PPO learners (CleanRL style) + social term
 evaluate.py              roll out a checkpoint, report metrics, optional video
 empathy_marl/
-  envs.py                env factory: `pd`, `coin`, `meltingpot:<substrate>`, `debug:image`
+  envs.py                env factory: `pd`, `coin`, `cleanup`, `meltingpot:<substrate>`, `debug:image`
   prisoners_dilemma.py   N-player repeated Prisoner's Dilemma (PettingZoo ParallelEnv)
   coin_game.py           Coin Game (Lerer & Peysakhovich 2017): the PD on a 3x3 grid, the sanity check for the value signal
-  agents.py              CNN / MLP trunk, optional LSTM (ppo_atari_lstm.py), one network per agent
+  cleanup.py             Clean Up (Hughes et al. 2018) in LIO's small fully observable form (Yang et al. 2020): 10x10 map,
+                         3 agents, egocentric plane observations that contain the whole map (PettingZoo wrapper)
+  ssd/                   vendored Sequential-Social-Dilemma dynamics behind cleanup.py (MIT; see ssd/NOTICE)
+  agents.py              CNN / grid-CNN / MLP trunk, optional LSTM (ppo_atari_lstm.py), reward models, one network per agent
   empathy.py             social term F_i (ei, svo, sia, ia) for the value signal (X_i) and the reward signal (intrinsic reward)
+  replay.py              replay of own rewarded transitions for the reward model (`--reward-model-replay`)
   metrics.py             efficiency / equality / sustainability per episode (+ env-specific episode stats)
 scripts/sweep_pd.sh, sweep_meltingpot.sh, summarize_runs.py   (local sweeps + results table)
 scripts/make_grid.py, scripts/slurm/                          (parameter grids + Compute Canada job arrays)
-scripts/experiments/pd.sh, coin.sh                            (experiments 1 / 1b end to end: tune / final / ppo / summary)
+scripts/experiments/pd.sh, coin.sh, cleanup.sh                (experiments 1 / 1b / 2 end to end: tune / final / ppo / summary)
 scripts/plot_curves.py, plot_final.py, best_configs.py        (learning curves; final figures with 95% CIs; per-method ranking)
 scripts/pd_value_probe.py                                     (PD critic probe)
 tests/                   pytest suite (alignment, formulas, envs, end-to-end smoke tests)
@@ -196,6 +200,44 @@ that keep the agent's own value in the expression work: pure other-perspective v
 SVO-value with φ ≥ π/3) collapses at large α into agents that stop taking coins, and SIA-value is
 transient.  In those runs the social term dominates the advantage (|X|/|A| from 2 to 500), hence
 the φ = 0 control above.
+
+### Experiment 2: Clean Up, 3 agents, fully observable (EI and IA)
+
+`--env-id cleanup` is Clean Up (Hughes et al. 2018) in the configuration of Yang et al. (2020, LIO): the 10x10
+map with 3 agents, 50-step episodes, no rotation (everyone faces up, so cleaning means walking to the river),
+no punishment beam, +1 per apple and nothing for cleaning.  Waste starts above the depletion threshold, so no
+apple grows until someone cleans, and it respawns while the river is below the threshold, so the orchard needs
+*continuous* cleaning: a public good with delayed, diffuse benefits, which is exactly what the Coin Game
+(immediate harm to one other agent) could not test.  The dynamics are the open-source SSD implementation used
+by LIO, vendored in `empathy_marl/ssd/` (their independent actor-critic, inequity-aversion and centralised
+baselines in this environment are the published reference points).  Observations are an egocentric window of
+17x17 cells that always contains the whole map (`view_size` 8; LIO's 7 cuts the far wall row off at the edges),
+as one-hot planes `[self, others, apple, waste, river, wall, beam]`, so `V_i(o_j)` is "the same world with me
+standing where j stands" (`--cleanup-obs rgb` gives colours with the observer in a fixed self colour; spawn
+points are shuffled per episode, `--cleanup-fixed-spawn` restores LIO's fixed assignment).  A small grid CNN
+(`obs_type="grid"`) replaces the Atari trunk; the reward model is a tiny convolution over the `(o, o')` pair.
+
+Two additions to the method for N > 2 and delayed consequences: `--imagined-critic none` is the ablation of
+`other` *without* the critic (the other's discounted imagined rewards enter the coefficient with no baseline
+or bootstrap; `other` vs `none` measures what the value function on the other's observation contributes),
+`--social-aggregate mean|sum` says how the N-1 others are combined, and `--reward-model-replay K` replays the
+agent's own rewarded transitions into the reward-model loss so that an agent that stops eating does not forget
+what eating looks like (watch `imagined/corr/<agent>`).
+
+```bash
+scripts/experiments/cleanup.sh grids       # write the stage-A grid: plain PPO, EI (imagined other / none / shaped, value, reward),
+                                           # own-value control, IA (imagined shaped, reward, value); 29 configurations x 3 seeds
+scripts/experiments/cleanup.sh baseline    # cheap first pass: plain PPO + the true-reward references only (PPO check)
+scripts/experiments/cleanup.sh tune        # stage A (3M steps, 6 h limit); PPO_SETTINGS="2.5e-4:0.01 1e-3:0.01" crosses PPO settings
+scripts/experiments/cleanup.sh summary     # tables + ranking per method + the `final` line for each winner
+python scripts/plot_final.py ~/scratch/MARL/empathy_runs/cleanup_best_final_* -o figures_cleanup \
+    --metrics charts/collective_return charts/equality charts/clean_actions charts/waste_density
+```
+
+Metrics: `charts/collective_return` (apples per episode, all agents), `charts/equality`, and the environment's
+per-episode statistics `charts/apples|clean_actions|waste_cleaned/<agent>`, `charts/waste_density/<agent>`
+(mean polluted fraction of the river; 0.5 at the start, below 0.4 for apples to grow) and
+`charts/apple_prob/<agent>` (mean spawn probability, 0.3 = clean river).
 
 ### Hyper-parameter grids on Compute Canada (SLURM)
 
