@@ -12,5 +12,10 @@ models/
 *.pt
 grids/
 slurm_logs/
+# summaries and figures written into the repo directory by coin.sh summary / plot_curves.py / plot_final.py
+curves*/
+figures*/
+summary_*.txt
+/*.csv
 # working notes (kept local)
 docs/value_signal_analysis.md
