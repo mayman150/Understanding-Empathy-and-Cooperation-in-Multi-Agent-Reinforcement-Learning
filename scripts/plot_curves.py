@@ -5,6 +5,8 @@
     # PPO sensitivity of one configuration: lines = PPO settings (folder-name suffix lr.._ent..)
     python scripts/plot_curves.py ~/scratch/MARL/empathy_runs/coin_ppo_formulation_svo_signal_value_alpha_30_phi_0.523599_lr*_ent* \
         -o curves_ppo_svo30 --tags charts/collective_return charts/cooperation_rate/player_0
+    # the legend sits to the right of the axes; --legend none drops it for very crowded grids (e.g. SVO x PPO settings)
+    python scripts/plot_curves.py ~/scratch/MARL/empathy_runs/coin_best_imagined_other_lr* -o curves_imagined_other --legend none
 
 Output directory:
     curves.csv                    long format: env, method, params, runs, seed, tag, step, value   (binned by step)
@@ -103,6 +105,8 @@ def main() -> None:
     p.add_argument("--tags", nargs="*", default=DEFAULT_TAGS)
     p.add_argument("--bins", type=int, default=200, help="number of step bins per curve")
     p.add_argument("--methods", nargs="*", default=None, help="only these methods (e.g. sia_value none)")
+    p.add_argument("--legend", choices=["outside", "inside", "none"], default="outside",
+                   help="legend placement: right of the axes (default), inside them, or no legend (crowded grids)")
     p.add_argument("--no-plots", action="store_true", help="only write curves.csv")
     p.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1), help="parallel workers for reading event files")
     a = p.parse_args()
@@ -179,6 +183,16 @@ def main() -> None:
     def legend_name(key: tuple) -> str:
         return pretty_params(key[2]) + (f" [{key[3]}]" if key[3] else "")
 
+    def finish(fig, ax, n_lines: int, path: str) -> None:
+        """Legend (outside the axes by default, so it never covers the curves) and save."""
+        if a.legend == "inside":
+            ax.legend(fontsize=8, ncol=2 if n_lines > 6 else 1)
+        elif a.legend == "outside":
+            ax.legend(fontsize=7 if n_lines <= 24 else 6, ncol=1 if n_lines <= 24 else 2,
+                      loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False)
+        fig.savefig(path, dpi=130, bbox_inches="tight")  # bbox_inches keeps an outside legend in the image
+        plt.close(fig)
+
     methods = sorted({k[1] for k in agg})
     for tag in a.tags:
         safe_tag = tag.replace("/", "_")
@@ -199,10 +213,7 @@ def main() -> None:
             ax.set_xlabel("environment steps")
             ax.set_ylabel(tag.split("/")[-2] if tag.count("/") > 1 else tag.split("/")[-1])
             ax.grid(alpha=0.3)
-            ax.legend(fontsize=8, ncol=2 if len(configs) > 6 else 1)
-            fig.tight_layout()
-            fig.savefig(os.path.join(a.out, f"{safe_tag}__{method}.png"), dpi=130)
-            plt.close(fig)
+            finish(fig, ax, len(configs), os.path.join(a.out, f"{safe_tag}__{method}.png"))
 
         # overview: best configuration per method (by final mean of the FIRST requested tag)
         ref_tag = a.tags[0]
@@ -218,10 +229,7 @@ def main() -> None:
         ax.text(0.01, 0.01, f"selection: final {ref_tag}", transform=ax.transAxes, fontsize=7, alpha=0.7)
         ax.set_xlabel("environment steps")
         ax.grid(alpha=0.3)
-        ax.legend(fontsize=8)
-        fig.tight_layout()
-        fig.savefig(os.path.join(a.out, f"{safe_tag}__all_methods.png"), dpi=130)
-        plt.close(fig)
+        finish(fig, ax, len(methods), os.path.join(a.out, f"{safe_tag}__all_methods.png"))
     print(f"wrote plots to {a.out}/  ({len(a.tags)} tags x {len(methods)} methods + overviews)")
 
 
