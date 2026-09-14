@@ -38,9 +38,9 @@
 #                                             PPO_SETTINGS="1e-3:0.01"
 #   A2  method hyper-parameters at that setting (alpha grids of all EI modes, the phi = 0 control, the true-reward reference;
 #       IA rows unless IA_PAIRS="" IA_VALUE_PAIRS=""):
-#         GROUPS=ei scripts/experiments/cleanup.sh tune                          # EI only: 17 configurations x 3 seeds = 51 jobs
-#         GROUPS=ia TAG=cleanup_ia scripts/experiments/cleanup.sh tune           # IA / SIA only (own folder): 26 x 3 = 78 jobs
-#         GROUPS=svo TAG=cleanup_svo scripts/experiments/cleanup.sh tune         # SVO only: alpha x angle in every path, 17 x 3 = 51 jobs
+#         METHODS=ei scripts/experiments/cleanup.sh tune                          # EI only: 17 configurations x 3 seeds = 51 jobs
+#         METHODS=ia TAG=cleanup_ia scripts/experiments/cleanup.sh tune           # IA / SIA only (own folder): 26 x 3 = 78 jobs
+#         METHODS=svo TAG=cleanup_svo scripts/experiments/cleanup.sh tune         # SVO only: alpha x angle in every path, 17 x 3 = 51 jobs
 #         scripts/experiments/cleanup.sh tune                                    # EI + IA: 42 configurations x 3 seeds = 126 jobs
 #         LEVEL_VALUE=1 scripts/experiments/cleanup.sh tune                      # + the shaped rows on the "trace + value" level
 #                                                                                #   (EI, IA and SVO groups alike)
@@ -114,7 +114,8 @@ IA_VALUE_PAIRS=${IA_VALUE_PAIRS-"1:0.1 2:0.2"}
 # LEVEL_VALUE=1 adds the `shaped + value level` rows (--imagined-level trace_value: the formulation is applied to the
 # smoothed imagined rewards PLUS my critic's forecast for the other, "what you earned lately + what you are about to earn")
 LEVEL_VALUE=${LEVEL_VALUE:-0}
-GROUPS=${GROUPS:-"ei ia"}   # which method groups the A2 grid contains (plain PPO is always in): any of "ei", "ia", "svo"
+METHODS=${METHODS:-"ei ia"}   # which method groups the A2 grid contains (plain PPO is always in): any of "ei", "ia", "svo"
+                              # (not GROUPS: that is bash's own read-only array of the user's group ids on Linux)
 SVO_ALPHAS=${SVO_ALPHAS:-"1 2 3"}        # svo group: --imagined-critic other / value, crossed with the angles below
 SVO_PHIS=${SVO_PHIS:-"pi/4 pi/3"}        # pi/2 is EI, 0 is the own-value control (already in the ei group)
 SVO_SHAPED_ALPHAS=${SVO_SHAPED_ALPHAS:-"0.1"}
@@ -148,9 +149,9 @@ make_grids() {
     : > "$g"
     local mg="$PY scripts/make_grid.py $COMMON --seeds $SEEDS"
     local want_ei=0 want_ia=0 want_svo=0
-    [[ " $GROUPS " == *" ei "* ]] && want_ei=1
-    [[ " $GROUPS " == *" ia "* ]] && [ -n "$IA_PAIRS" ] && want_ia=1
-    [[ " $GROUPS " == *" svo "* ]] && want_svo=1
+    [[ " $METHODS " == *" ei "* ]] && want_ei=1
+    [[ " $METHODS " == *" ia "* ]] && [ -n "$IA_PAIRS" ] && want_ia=1
+    [[ " $METHODS " == *" svo "* ]] && want_svo=1
     # plain PPO
     $mg --signals value --alphas 0 --formulations none --extra "$extra" >> "$g"
     # references with access to the true rewards
