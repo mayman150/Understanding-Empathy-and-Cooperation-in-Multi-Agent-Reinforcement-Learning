@@ -24,6 +24,12 @@
 #   IA  reward                                  Hughes et al. 2018 with true rewards (the published Clean Up method)
 #   IA  value (+ --social-scale)                the paper's IA on values
 #
+# Two weight scales.  In the coefficient slot (`other`, standardised) a weight of 1 means "your outcome counts as much
+# as mine" (IA_PAIRS).  In the reward slot (`shaped`, `shaped_lv`, `reward`) the smoothed trace counts every reward
+# about 28 times (1 / (1 - gamma * lambda_r)), so the same preference needs weights ~30x smaller (IA_SHAPED_PAIRS):
+# the PPO-stage anchors with beta = 1 in the reward slot ate nothing in all 12 settings (guilt at 28x punishes the
+# first apple more than it pays), while 0.03 / 0.3 learned.
+#
 # Every imagined configuration uses a warm-up of about WARMUP_STEPS (100k) environment steps of plain PPO while the reward
 # model learns (apples are rare at the start; the number of iterations is derived from the rollout size) and
 # --reward-model-replay 2048 (own rewarded transitions are replayed so that an agent that stops eating does not forget
@@ -107,8 +113,10 @@ NONE_ALPHAS=${NONE_ALPHAS:-"1 2"}
 SHAPED_ALPHAS=${SHAPED_ALPHAS:-"0.03 0.1 0.3"}
 VALUE_ALPHAS=${VALUE_ALPHAS:-"0.5 1 2"}
 CONTROL_ALPHAS=${CONTROL_ALPHAS:-"1 2"}
-REWARD_ALPHAS=${REWARD_ALPHAS:-"0.03 0.1 0.3"}
-IA_PAIRS=${IA_PAIRS-"5:0.05 1:0.05 0.05:5 0.05:1 1:1 0:1 0:0.5"}   # alpha(envy):beta(guilt); 5:0.05 = Hughes et al. 2018; 0:x = guilt only
+REWARD_ALPHAS=${REWARD_ALPHAS:-"0.01 0.03 0.1 0.3"}
+IA_PAIRS=${IA_PAIRS-"5:0.05 1:0.05 0.05:5 0.05:1 1:1 0:1 0:0.5"}   # alpha(envy):beta(guilt) for `other`; 5:0.05 = Hughes et al. 2018; 0:x = guilt only
+# reward-slot pairs (shaped, shaped_lv, reward): Hughes' 5:0.05, then the same preferences ~30x smaller (see the note above)
+IA_SHAPED_PAIRS=${IA_SHAPED_PAIRS-"5:0.05 0.3:0.03 0.03:0.3 0.01:0.1 0:0.3 0:0.1 0.1:0.1"}
 SIA_ALPHAS=${SIA_ALPHAS-"0.5 1"}                                 # symmetric inequity aversion, the control row
 IA_VALUE_PAIRS=${IA_VALUE_PAIRS-"1:0.1 2:0.2"}
 # LEVEL_VALUE=1 adds the `shaped + value level` rows (--imagined-level trace_value: the formulation is applied to the
@@ -118,7 +126,7 @@ METHODS=${METHODS:-"ei ia"}   # which method groups the A2 grid contains (plain 
                               # (not GROUPS: that is bash's own read-only array of the user's group ids on Linux)
 SVO_ALPHAS=${SVO_ALPHAS:-"1 2 3"}        # svo group: --imagined-critic other / value, crossed with the angles below
 SVO_PHIS=${SVO_PHIS:-"pi/4 pi/3"}        # pi/2 is EI, 0 is the own-value control (already in the ei group)
-SVO_SHAPED_ALPHAS=${SVO_SHAPED_ALPHAS:-"0.1"}
+SVO_SHAPED_ALPHAS=${SVO_SHAPED_ALPHAS:-"0.03 0.1"}   # reward-slot alphas (shaped / reward), ~28x amplified by the trace
 TAG=${TAG:-cleanup}
 LAST=${LAST:-20}
 LAST_STEPS=${LAST_STEPS:-20000}   # summary / ranking window: mean over the last 20k environment steps (about 50 logged points here)
@@ -156,7 +164,7 @@ make_grids() {
     $mg --signals value --alphas 0 --formulations none --extra "$extra" >> "$g"
     # references with access to the true rewards
     [ $want_ei = 1 ] && $mg --signals reward --alphas $REWARD_ALPHAS --formulations ei --extra "$extra" >> "$g"
-    [ $want_ia = 1 ] && $mg --signals reward --formulations ia --ia-pairs $IA_PAIRS --extra "$extra" >> "$g"
+    [ $want_ia = 1 ] && $mg --signals reward --formulations ia --ia-pairs $IA_SHAPED_PAIRS --extra "$extra" >> "$g"
     if [ -z "$only_baseline" ] && [ $want_ei = 1 ]; then
       # EI: imagined rewards, three ways
       $mg --signals imagined --alphas $OTHER_ALPHAS --formulations ei --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
@@ -181,8 +189,8 @@ make_grids() {
       $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
       $mg --signals imagined --alphas $SIA_ALPHAS --formulations sia --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
       # IA: imagined (shaped, Hughes et al. with imagined rewards) and on values (the report's IA)
-      $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped" >> "$g"
-      [ "$LEVEL_VALUE" = 1 ] && $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped --imagined-level trace_value" >> "$g"
+      $mg --signals imagined --formulations ia --ia-pairs $IA_SHAPED_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped" >> "$g"
+      [ "$LEVEL_VALUE" = 1 ] && $mg --signals imagined --formulations ia --ia-pairs $IA_SHAPED_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped --imagined-level trace_value" >> "$g"
       [ -n "$IA_VALUE_PAIRS" ] && $mg --signals value --formulations ia --ia-pairs $IA_VALUE_PAIRS --extra "$extra --social-scale" >> "$g"
     fi
     GRIDS+=("$g")
