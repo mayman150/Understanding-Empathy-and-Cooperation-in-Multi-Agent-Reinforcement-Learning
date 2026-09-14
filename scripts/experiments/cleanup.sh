@@ -43,9 +43,15 @@
 #         GROUPS=svo TAG=cleanup_svo scripts/experiments/cleanup.sh tune         # SVO only: alpha x angle in every path, 17 x 3 = 51 jobs
 #         scripts/experiments/cleanup.sh tune                                    # EI + IA: 42 configurations x 3 seeds = 126 jobs
 #         LEVEL_VALUE=1 scripts/experiments/cleanup.sh tune                      # + the shaped rows on the "trace + value" level
+#                                                                                #   (EI, IA and SVO groups alike)
 #       IA can also join the PPO stage as an extra anchor (same folders as the running one):
 #         PPO_ANCHORS="--formulation ia --signal imagined --imagined-critic other --social-scale --alpha 0 --beta 1" \
 #             scripts/experiments/cleanup.sh ppo                                 # 12 settings x 3 seeds = 36 jobs
+#       and so can the shaped + "trace + value" level of the three formulations (reward-slot weights, hence small):
+#         PPO_ANCHORS="--formulation ei --signal imagined --imagined-critic shaped --imagined-level trace_value --alpha 0.1|\
+#           --formulation ia --signal imagined --imagined-critic shaped --imagined-level trace_value --alpha 0.03 --beta 0.3|\
+#           --formulation svo --signal imagined --imagined-critic shaped --imagined-level trace_value --alpha 0.1 --phi 0.785398" \
+#             scripts/experiments/cleanup.sh ppo                                 # 12 settings x 3 anchors x 3 seeds = 108 jobs
 #       then the imagined-specific knobs around the winner:
 #         scripts/experiments/cleanup.sh sweep "--imagined-lambda:0.95,0.99" "--reward-model-replay:0,2048" -- <configuration>
 #   C   winners on fresh seeds:  FINAL_SEEDS=7-14 scripts/experiments/cleanup.sh final <configuration>   (lines printed by `summary`)
@@ -165,6 +171,7 @@ make_grids() {
       $mg --signals imagined --alphas $SVO_ALPHAS --formulations svo --phis $SVO_PHIS --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
       $mg --signals value --alphas $SVO_ALPHAS --formulations svo --phis $SVO_PHIS --extra "$extra --social-scale" >> "$g"
       $mg --signals imagined --alphas $SVO_SHAPED_ALPHAS --formulations svo --phis $SVO_PHIS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped" >> "$g"
+      [ "$LEVEL_VALUE" = 1 ] && $mg --signals imagined --alphas $SVO_SHAPED_ALPHAS --formulations svo --phis $SVO_PHIS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped --imagined-level trace_value" >> "$g"
       $mg --signals reward --alphas $SVO_SHAPED_ALPHAS --formulations svo --phis $SVO_PHIS --extra "$extra" >> "$g"
     fi
     if [ -z "$only_baseline" ] && [ $want_ia = 1 ]; then
