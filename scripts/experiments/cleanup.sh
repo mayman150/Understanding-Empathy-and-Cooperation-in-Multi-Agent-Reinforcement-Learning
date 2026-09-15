@@ -178,6 +178,7 @@ make_grids() {
     if [ -z "$only_baseline" ] && [ $want_svo = 1 ]; then
       # SVO: the same linear family as EI with the weight split by the angle; tuned over alpha x phi in every path
       $mg --signals imagined --alphas $SVO_ALPHAS --formulations svo --phis $SVO_PHIS --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
+      $mg --signals imagined --alphas $SVO_ALPHAS --formulations svo --phis $SVO_PHIS --extra "$extra $IMAGINED_ARGS --imagined-critic none --social-scale" >> "$g"
       $mg --signals value --alphas $SVO_ALPHAS --formulations svo --phis $SVO_PHIS --extra "$extra --social-scale" >> "$g"
       $mg --signals imagined --alphas $SVO_SHAPED_ALPHAS --formulations svo --phis $SVO_PHIS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped" >> "$g"
       [ "$LEVEL_VALUE" = 1 ] && $mg --signals imagined --alphas $SVO_SHAPED_ALPHAS --formulations svo --phis $SVO_PHIS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped --imagined-level trace_value" >> "$g"
@@ -187,6 +188,7 @@ make_grids() {
       # IA / SIA through the advantage construction (inequity-dependent weights on the imagined advantages, my critic as
       # the others' value function); SIA is the symmetric control
       $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
+      $mg --signals imagined --formulations ia --ia-pairs $IA_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic none --social-scale" >> "$g"
       $mg --signals imagined --alphas $SIA_ALPHAS --formulations sia --extra "$extra $IMAGINED_ARGS --imagined-critic other --social-scale" >> "$g"
       # IA: imagined (shaped, Hughes et al. with imagined rewards) and on values (the report's IA)
       $mg --signals imagined --formulations ia --ia-pairs $IA_SHAPED_PAIRS --extra "$extra $IMAGINED_ARGS --imagined-critic shaped" >> "$g"
